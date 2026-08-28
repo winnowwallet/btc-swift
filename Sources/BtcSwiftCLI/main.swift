@@ -122,7 +122,7 @@ do {
 
     case "combine-psbt":
         guard arguments.count >= 2 else { fail("combine-psbt needs two or more PSBTs") }
-        var psbts = try arguments.map { base64 -> PSBT in
+        var psbts = arguments.map { base64 -> PSBT in
             guard let psbt = try? PSBT(base64: base64) else { fail("bad PSBT") }
             return psbt
         }
