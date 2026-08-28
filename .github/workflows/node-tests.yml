@@ -1,0 +1,124 @@
+name: Node e2e (manual)
+
+# The node-backed differential battery. Deliberately excluded from push and
+# pull-request CI: the library is a direct-P2P client,
+# and ordinary development must not depend on a bitcoind running on an owner's
+# workstation. Enable this workflow only after provisioning a dedicated runner
+# with the `node-e2e` label and its own disposable custom-signet fixture.
+#
+# Node location is configurable via repository VARIABLES (not secrets) —
+# unset variables fall back to the local-dev defaults:
+#   WINNOW_NODE_HOST (default 127.0.0.1)
+#   WINNOW_P2P_PORT  (default 38401)
+#   WINNOW_RPC_PORT  (default 38400)
+#   WINNOW_DATADIR points at the fixture datadir for cookie auth. The runner's
+#   BTC_SWIFT_DATADIR variable is probed only to document the fixture location.
+# The "Node reachability probe" step reports which of these the runners can
+# actually reach. Note: `xcodebuild test` does not forward its environment
+# into the iOS-simulator test runner, so the UI suite gets these values via
+# ~/.winnow-node.env (written by the "simulator test config" step).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_dedicated_fixture:
+        description: Run against the dedicated, disposable node-e2e fixture
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-tests
+  cancel-in-progress: false
+
+jobs:
+  node-tests:
+    if: inputs.confirm_dedicated_fixture
+    # The extra label prevents this workload from falling back to a developer
+    # workstation or either of the general-purpose btc-swift runners.
+    runs-on: [self-hosted, macOS, btc-swift, node-e2e]
+    timeout-minutes: 90
+    env:
+      WINNOW_NODE_HOST: '127.0.0.1'
+      WINNOW_P2P_PORT: ${{ vars.BTC_SWIFT_P2P_PORT || '38401' }}
+      WINNOW_RPC_PORT: ${{ vars.BTC_SWIFT_RPC_PORT || '38400' }}
+      WINNOW_FIXTURE_DATADIR: ${{ vars.BTC_SWIFT_DATADIR || '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Runner environment probe
+        run: |
+          echo "== uname =="; uname -a
+          sw_vers
+          echo "== Xcode =="
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "no /Applications/Xcode*.app"
+          echo "xcode-select: $(xcode-select -p 2>&1)"
+          echo "== swift =="
+          (which swift && swift --version) 2>&1 || echo "no swift"
+          echo "== brew =="
+          (which brew && brew --version | head -1) 2>&1 || echo "no brew"
+          echo "== bitcoin-cli =="
+          (which bitcoin-cli && bitcoin-cli --version | head -1) 2>&1 \
+            || ls /usr/local/bin/bitcoin-cli /opt/homebrew/bin/bitcoin-cli 2>/dev/null \
+            || echo "no bitcoin-cli"
+          echo "== datadir =="
+          ls -d "${WINNOW_FIXTURE_DATADIR:-$HOME/.bitcoin-mysignet}" 2>/dev/null || echo "no fixture datadir visible on this runner"
+          echo "== home =="; echo "$HOME"
+
+      - name: Node reachability probe
+        run: |
+          echo "P2P $WINNOW_NODE_HOST:$WINNOW_P2P_PORT"
+          nc -z -G 5 "$WINNOW_NODE_HOST" "$WINNOW_P2P_PORT" && echo "P2P REACHABLE" || echo "P2P UNREACHABLE"
+          echo "RPC $WINNOW_NODE_HOST:$WINNOW_RPC_PORT"
+          nc -z -G 5 "$WINNOW_NODE_HOST" "$WINNOW_RPC_PORT" && echo "RPC REACHABLE" || echo "RPC UNREACHABLE"
+
+      - name: Install pinned XcodeGen
+        run: scripts/install-xcodegen
+
+      - name: Require pre-provisioned bitcoin-cli
+        run: |
+          which bitcoin-cli >/dev/null || {
+            echo "::error::the dedicated node-e2e runner must pre-provision bitcoin-cli"
+            exit 1
+          }
+
+      - name: Verify the fixture node answers
+        # The dedicated runner provisions its own disposable custom signet via
+        # scripts/signet-fixture (winnowwallet/macos-ci-runners documents it).
+        # Cookie auth against the local datadir — no credential secret, and
+        # nothing here rewrites the fixture's bitcoin.conf: an earlier version
+        # of this step clobbered the signet challenge with a bare public-signet
+        # conf, which silently turned the fixture into a public-signet node.
+        run: |
+          DD="${WINNOW_FIXTURE_DATADIR:-$HOME/.bitcoin-mysignet}"
+          bitcoin-cli -datadir="$DD" -rpcport="${WINNOW_RPC_PORT}" getblockchaininfo >/dev/null
+          echo "fixture height: $(bitcoin-cli -datadir="$DD" -rpcport="${WINNOW_RPC_PORT}" getblockcount)"
+
+      - name: Locate developer tools
+        id: devtools
+        run: |
+          test -d /Applications/Xcode.app/Contents/Developer || {
+            echo "::error::the dedicated node-e2e runner is missing /Applications/Xcode.app"
+            exit 1
+          }
+          echo "devdir=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_OUTPUT"
+
+      - name: Swift package tests
+        env:
+          DEVELOPER_DIR: ${{ steps.devtools.outputs.devdir }}
+        run: swift test
+
+      - name: Differential suite (WINNOW_DIFF=1, node-backed)
+        env:
+          DEVELOPER_DIR: ${{ steps.devtools.outputs.devdir }}
+          WINNOW_DIFF: "1"
+        # --no-parallel is required, not tidiness. Two suites mine onto the
+        # same tip (FullLoopDiffTests and VaultInteropDiffTests); run
+        # concurrently they race for every block, each re-mines on the winner,
+        # and the run stalls indefinitely rather than failing.
+        run: swift test --filter DifferentialTests --no-parallel

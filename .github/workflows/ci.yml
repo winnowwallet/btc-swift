@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The complexity budget from .swiftlint.yml, enforced: SwiftLint exits
+  # nonzero on error-level violations (over 12 decision paths) and green on
+  # warnings. Every function in Sources/ is at 10 or under.
+  complexity:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Cyclomatic complexity budget
+        run: |
+          which swiftlint || brew install swiftlint
+          swiftlint lint --quiet
+
+  # Runs for every event, including pull requests from forks, so it is
+  # GitHub-hosted and ephemeral: fork code must never reach a persistent
+  # self-hosted host (the same SEC-005 reasoning as the wallet repo).
+  # Unconditional on purpose — a fork PR must not pass by skipping it.
+  package-tests:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Swift package tests (BIP vectors + unit + loopback)
+        run: swift test
+        # Env-gated suites (DifferentialTests, signet integration) skip
+        # cleanly without WINNOW_DIFF/WINNOW_SIGNET and no local node.
+
+  # The self-hosted runners are x86_64 and macos-latest is arm64; this keeps
+  # Intel coverage, on trusted events only — never pull_request, so fork code
+  # cannot reach the persistent host.
+  package-tests-intel:
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, macos, x86_64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Swift package tests on x86_64
+        run: swift test
+
+  cli-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and exercise the CLI
+        run: |
+          swift build --configuration release
+          .build/release/btc-swift derive \
+            "tr([00000000/86'/1'/0']tpubD6NzVbkrYhZ4XgiXtGrdW5XDAPFCL9h7we1vwNCpn8tGbBcgfVYjXyhWo4E1xkh56hjod1RhGjxbaTLV3X4FyWuejifB9jusQ46QzG87VKp/0/*)" \
+            --network signet --count 3
