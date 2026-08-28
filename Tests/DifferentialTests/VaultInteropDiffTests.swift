@@ -1,6 +1,7 @@
 import BitcoinCore
 import BitcoinP2P
 import Foundation
+import P256K
 import Testing
 import WalletCore
 
@@ -349,6 +350,181 @@ struct VaultInteropDiffTests {
         let confirmed = try BitcoinCLI.runObject(["getrawtransaction", txid, "true"])
         #expect(try BitcoinCLI.int(confirmed, "confirmations") >= 1)
         trace("confirmed \(txid.prefix(16))… with zero Winnow signatures")
+    }
+
+    /// Two-level custody by composition: a MuSig2 2-of-2 *group* is one
+    /// signer of the 2-of-3. From the leaf's point of view the group is just
+    /// an x-only key; the multi-level part is that no single person can
+    /// produce that key's signature. The threshold is then met by the group
+    /// plus Core — two different kinds of "signer", neither of them us.
+    ///
+    /// The group's leg is a plain BIP342 script-path signature produced by
+    /// the BIP327 two-round ceremony over the script-path sighash, with no
+    /// taproot tweak — the aggregate is a leaf key, not an output key. The
+    /// finalizer BIP340-verifies every signature before counting it, so a
+    /// wrong aggregate, parity, or sighash fails loudly here rather than at
+    /// the mempool.
+    @Test("a MuSig2 group is one signer of a 2-of-3, beside Core")
+    func muSig2GroupAsOneSignerOfScriptPathVault() async throws {
+        func trace(_ step: String) { FileHandle.standardError.write(Data("interop3: \(step)\n".utf8)) }
+
+        // 1. The group: two members with their own secrets; their aggregate
+        //    x-only key is the vault's first cosigner. Core is the second;
+        //    ours is the third and never signs.
+        let memberSecrets = [Data([0x71] + Data(repeating: 0x11, count: 31)),
+                             Data([0x72] + Data(repeating: 0x22, count: 31))]
+        let memberKeys = try memberSecrets.map {
+            try P256K.Signing.PrivateKey(dataRepresentation: $0).publicKey.dataRepresentation
+        }
+        // BIP328: the aggregate becomes a synthetic xpub, so the group is a
+        // derivable cosigner exactly like any other — fresh leaf key per
+        // address index, no special-casing in the descriptor.
+        let aggregateCompressed = try MuSig.aggregate(memberKeys)
+        let synthetic = try MuSig.syntheticExtendedKey(aggregatePublicKey: aggregateCompressed)
+        let groupExpression = "[\(String(format: "%08x", synthetic.fingerprint))]"
+            + "\(synthetic.serialized(network: .testnet))/<0;1>/*"
+        let core = try coreParticipant(wallet: "interop-a")
+        let coreExpression = core.publicExpression + "/<0;1>/*"
+        let silentEntropy = Data([0x73] + Data(repeating: 0, count: 15))
+        let silentMaster = try HDKey(seed: BIP39.seed(mnemonic: BIP39.mnemonic(entropy: silentEntropy)))
+        let silentAccount = try silentMaster.derived(path: "m/86'/1'/0'")
+        let silentExpression = "[\(String(format: "%08x", silentMaster.fingerprint))/86'/1'/0']"
+            + "\(silentAccount.neutered.serialized(network: .testnet))/<0;1>/*"
+        let descriptor = try Vault.multiADescriptor(
+            threshold: 2, cosigners: [groupExpression, coreExpression, silentExpression])
+        let vault = try Vault(descriptor: descriptor, network: .signet)
+        #expect(vault.usesUnspendableInternalKey)
+        trace("group synthetic xpub \(synthetic.fingerprint) is cosigner 1 of 3")
+
+        // 2. Core must agree about the addresses even with a raw-key
+        //    participant in the leaf.
+        let ourText = descriptor.serialized()
+        let ourAddresses = try (0 ..< 2).map { try vault.address(index: UInt32($0)) }
+        let derived = try BitcoinCLI.runJSON(["deriveaddresses", ourText, "[0,1]"])
+        let coreAddresses = ((derived as? [Any])?.first as? [Any])?.compactMap { $0 as? String }
+        #expect(coreAddresses == ourAddresses,
+                "Core disagrees about a vault with a synthetic-xpub participant")
+        trace("descriptor agreement with a synthetic-xpub cosigner")
+
+        // 3. Core imports its private leg as a signer wallet.
+        let signerWallet = "interop3-\(UInt32.random(in: 0 ..< 1_000_000))"
+        _ = try BitcoinCLI.run(["-named", "createwallet", "wallet_name=\(signerWallet)", "blank=true"])
+        let body = String(ourText.split(separator: "#")[0])
+        let ourSpelling = coreExpression
+            .replacingOccurrences(of: "h/", with: "'/")
+            .replacingOccurrences(of: "h]", with: "']")
+        let privateText = body.replacingOccurrences(
+            of: ourSpelling, with: core.privateExpression + "/<0;1>/*")
+        #expect(privateText != body)
+        let checksum = try BitcoinCLI.string(
+            BitcoinCLI.runObject(["getdescriptorinfo", privateText]), "checksum")
+        let imported = try BitcoinCLI.runJSON(
+            ["importdescriptors",
+             #"[{"desc":"\#(privateText)#\#(checksum)","timestamp":"now","active":true,"range":[0,5]}]"#],
+            wallet: signerWallet)
+        #expect(((imported as? [Any])?.first as? [String: Any])?["success"] as? Bool == true)
+
+        // 4. Fund and mature.
+        let vaultScript = try vault.scriptPubKey(index: 0)
+        let burnScript = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/7")))
+        let fundingHash = try await SignetMiner.mineOntoTip(payingTo: vaultScript)
+        for _ in 0 ..< 99 { _ = try await SignetMiner.mineOntoTip(payingTo: burnScript) }
+        let fundingBlock = try BitcoinCLI.runObject(["getblock", fundingHash, "2"])
+        let fundingHeight = try UInt32(BitcoinCLI.int(fundingBlock, "height"))
+        let coinbase = try #require(
+            (try BitcoinCLI.array(fundingBlock, "tx")).first as? [String: Any])
+        let fundingTxid = try BitcoinCLI.string(coinbase, "txid")
+        let utxo = WalletUTXO(txid: Data(Data(hex: fundingTxid)!.reversed()), vout: 0,
+                              amount: 5_000_000_000, scriptPubKey: vaultScript,
+                              chain: .receive, index: 0, height: fundingHeight,
+                              isCoinbase: true)
+        trace("vault funded at height \(fundingHeight)")
+
+        // 5. We create the spend and sign nothing.
+        let payoutScript = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/8")))
+        let tip = try UInt32(BitcoinCLI.blockCount())
+        var psbt = try vault.createSpend(
+            utxos: [utxo], payments: [Payment(amount: 1_000_000, scriptPubKey: payoutScript)],
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: tip)
+        #expect(psbt.inputs[0].tapScriptSignatures.isEmpty)
+
+        // 6. The group's leg: BIP327 two rounds over the script-path sighash,
+        //    no tweaks — the aggregate is a leaf key, not an output key.
+        let leaf = try #require(psbt.inputs[0].tapLeafScripts.first)
+        let tx = try psbt.unsignedTransaction()
+        let sighash = try SighashBIP341.sighash(
+            tx: tx, inputIndex: 0, spentOutputs: [utxo.spentOutput], hashType: .default,
+            scriptPath: .init(leafScript: Script(leaf.script), leafVersion: leaf.leafVersion))
+        // The leaf key is the BIP328 child at 0/0, so the session carries
+        // the two non-hardened derivation tweaks — the same shape the
+        // key-path vaults use, applied to a script-path message.
+        let tweak0 = MuSig.bip328Tweak(chainCode: synthetic.chainCode,
+                                       aggregatePublicKey: aggregateCompressed, index: 0)
+        let child0 = try synthetic.derived(path: "0")
+        let tweak00 = MuSig.bip328Tweak(chainCode: child0.chainCode,
+                                        aggregatePublicKey: child0.publicKey, index: 0)
+        let groupLeafKey = try synthetic.derived(path: "0/0").publicKey.dropFirst()
+        let baseAggregateXonly = Data(aggregateCompressed.dropFirst())
+        var nonces: [(secret: Data, public_: Data)] = []
+        for (secret, publicKey) in zip(memberSecrets, memberKeys) {
+            let nonce = try MuSig.nonceGenerate(secretKey: secret, publicKey: publicKey,
+                                                 aggregateKey: baseAggregateXonly, message: sighash)
+            nonces.append((nonce.secretNonce, nonce.publicNonce))
+        }
+        let aggregateNonce = try MuSig.nonceAggregate(publicNonces: nonces.map(\.public_))
+        let session = MuSig.Session(aggregateNonce: aggregateNonce, publicKeys: memberKeys,
+                                     tweaks: [tweak0, tweak00],
+                                     isXOnlyTweaks: [false, false], message: sighash)
+        var partials: [Data] = []
+        for (index, member) in memberSecrets.enumerated() {
+            var secretNonce = nonces[index].secret
+            let partial = try MuSig.partialSign(secretNonce: &secretNonce, secretKey: member,
+                                                 session: session)
+            try MuSig.partialVerify(partialSignature: partial,
+                                     publicNonce: nonces[index].public_,
+                                     publicKey: memberKeys[index], session: session)
+            partials.append(partial)
+        }
+        let groupSignature = try MuSig.partialSigAggregate(partialSignatures: partials,
+                                                            session: session)
+        psbt.inputs[0].pairs.append(PSBT.KeyValue(
+            type: 0x14, keyData: Data(groupLeafKey) + leaf.leafHash, value: groupSignature))
+        trace("group produced one BIP342 signature from two partials")
+
+        // 7. Core signs its leg from our envelope.
+        let processed = try BitcoinCLI.runObject(
+            ["walletprocesspsbt", try v0Envelope(psbt), "true", "DEFAULT", "true", "false"],
+            wallet: signerWallet)
+        let coreMaps = try v0InputMaps(base64: try BitcoinCLI.string(processed, "psbt"),
+                                       inputCount: psbt.inputs.count)
+        for (index, map) in coreMaps.enumerated() {
+            for pair in map where pair.type == 0x14 {
+                guard !psbt.inputs[index].pairs.contains(where: { $0.key == pair.key }) else { continue }
+                psbt.inputs[index].pairs.append(pair)
+            }
+        }
+        #expect(psbt.inputs[0].tapScriptSignatures.count == 2,
+                "expected the group's signature plus Core's")
+
+        // 8. Our finalizer verifies both — a bad aggregate dies here — and
+        //    the network judges the rest.
+        var finalPSBT = psbt
+        let transaction = try vault.finalizeSpend(
+            &finalPSBT, knownUTXOs: [utxo],
+            ownedOutputCoordinates: [.init(choice: 1, index: 0)], chainTip: tip)
+        let raw = transaction.serialized(includeWitness: true).hex
+        let accept = try BitcoinCLI.runJSON(["testmempoolaccept", "[\"\(raw)\"]"])
+        let verdict = (accept as? [Any])?.first as? [String: Any]
+        #expect(verdict?["allowed"] as? Bool == true,
+                "network rejected the group-signed spend: \(verdict?["reject-reason"] ?? "unknown")")
+        let txid = try BitcoinCLI.run(["sendrawtransaction", raw])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try await SignetMiner.mineOntoTip(payingTo: burnScript)
+        let confirmed = try BitcoinCLI.runObject(["getrawtransaction", txid, "true"])
+        #expect(try BitcoinCLI.int(confirmed, "confirmations") >= 1)
+        trace("confirmed \(txid.prefix(16))… — one signer was a 2-of-2 group")
     }
 
     /// Can Core co-sign a MuSig2 vault? (#58, S8)
