@@ -162,10 +162,12 @@ def main() -> None:
         subject = [{"name": args.subject_name, "digest": {"sha1": tree}}]
 
     materials = [
-        {"uri": "git+https://github.com/winnowwallet/winnow.git", "digest": {"sha1": commit}},
-        {"uri": "file:Package.swift", "digest": {"sha256": sha256_file(package_path)}},
-        {"uri": "file:Package.resolved", "digest": {"sha256": sha256_file(resolved_path)}},
-        {"uri": "file:project.yml", "digest": {"sha256": sha256_file(project_path)}},
+        {"uri": "git+https://github.com/winnowwallet/btc-swift.git", "digest": {"sha1": commit}},
+        # Presence-driven: the library repo has no project.yml, and a repo
+        # without a committed Package.resolved simply has fewer materials —
+        # an honest SBOM either way, never a crash.
+        *[{"uri": f"file:{path.name}", "digest": {"sha256": sha256_file(path)}}
+          for path in (package_path, resolved_path, project_path) if path.exists()],
         *dependencies,
     ]
     materials.sort(key=lambda material: material["uri"])
