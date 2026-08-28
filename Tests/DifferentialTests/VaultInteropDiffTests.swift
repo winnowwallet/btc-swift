@@ -217,6 +217,140 @@ struct VaultInteropDiffTests {
                 "the co-signed spend did not confirm")
         trace("confirmed \(txid.prefix(16))… — unsigned was \(unsignedBase64.prefix(12))…")
     }
+    /// The inverse composition: both signatures that satisfy the 2-of-3
+    /// threshold come from independent Core wallets, and our key never
+    /// signs. Our implementation is creator, envelope converter, combiner,
+    /// finalizer, and broadcaster only — which is exactly the claim a
+    /// cosigner-app deployment makes, and it must hold with zero of our own
+    /// signatures in the witness. The PSBT also travels Core-to-Core in
+    /// between: A's signed envelope feeds B, so the ceremony includes a leg
+    /// no Winnow code touches at all.
+    @Test("two Core wallets satisfy the threshold; our key never signs")
+    func twoCoreSignersSatisfyThreshold() async throws {
+        func trace(_ step: String) { FileHandle.standardError.write(Data("interop2: \(step)\n".utf8)) }
+
+        // 1. Two cosigners are Core's, from two wallets Core generated; one
+        //    is ours and stays silent.
+        let coreA = try coreParticipant(wallet: "interop-a")
+        let coreB = try coreParticipant(wallet: "interop-b")
+        let silentEntropy = Data([0x60] + Data(repeating: 0, count: 15))
+        let silentMaster = try HDKey(seed: BIP39.seed(mnemonic: BIP39.mnemonic(entropy: silentEntropy)))
+        let silentAccount = try silentMaster.derived(path: "m/86'/1'/0'")
+        let silentExpression = "[\(String(format: "%08x", silentMaster.fingerprint))/86'/1'/0']"
+            + "\(silentAccount.neutered.serialized(network: .testnet))/<0;1>/*"
+        let expressionA = coreA.publicExpression + "/<0;1>/*"
+        let expressionB = coreB.publicExpression + "/<0;1>/*"
+        let descriptor = try Vault.multiADescriptor(
+            threshold: 2, cosigners: [expressionA, expressionB, silentExpression])
+        let vault = try Vault(descriptor: descriptor, network: .signet)
+        #expect(vault.usesUnspendableInternalKey)
+
+        // 2. Address agreement, as always, before any money moves.
+        let ourText = descriptor.serialized()
+        let ourAddresses = try (0 ..< 3).map { try vault.address(index: UInt32($0)) }
+        let derived = try BitcoinCLI.runJSON(["deriveaddresses", ourText, "[0,2]"])
+        let coreAddresses = ((derived as? [Any])?.first as? [Any])?.compactMap { $0 as? String }
+        #expect(coreAddresses == ourAddresses)
+        trace("descriptor agreement over \(ourAddresses.count) addresses")
+
+        // 3. Two signer wallets, each importing the vault with exactly its
+        //    own private leg substituted in.
+        func signerWallet(substituting expression: String,
+                          privateExpression: String, tag: String) throws -> String {
+            let wallet = "interop2-\(tag)-\(UInt32.random(in: 0 ..< 1_000_000))"
+            _ = try BitcoinCLI.run(["-named", "createwallet", "wallet_name=\(wallet)", "blank=true"])
+            let body = String(ourText.split(separator: "#")[0])
+            let ourSpelling = expression
+                .replacingOccurrences(of: "h/", with: "'/")
+                .replacingOccurrences(of: "h]", with: "']")
+            let privateText = body.replacingOccurrences(
+                of: ourSpelling, with: privateExpression + "/<0;1>/*")
+            #expect(privateText != body, "\(tag)'s leg was not substituted")
+            let checksum = try BitcoinCLI.string(
+                BitcoinCLI.runObject(["getdescriptorinfo", privateText]), "checksum")
+            let imported = try BitcoinCLI.runJSON(
+                ["importdescriptors",
+                 #"[{"desc":"\#(privateText)#\#(checksum)","timestamp":"now","active":true,"range":[0,5]}]"#],
+                wallet: wallet)
+            let ok = ((imported as? [Any])?.first as? [String: Any])?["success"] as? Bool
+            #expect(ok == true, "Core refused the vault descriptor for \(tag)")
+            return wallet
+        }
+        let walletA = try signerWallet(substituting: expressionA,
+                                       privateExpression: coreA.privateExpression, tag: "a")
+        let walletB = try signerWallet(substituting: expressionB,
+                                       privateExpression: coreB.privateExpression, tag: "b")
+        trace("two Core signer wallets imported, one key each")
+
+        // 4. Fund and mature.
+        let vaultScript = try vault.scriptPubKey(index: 0)
+        let burnScript = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/5")))
+        let fundingHash = try await SignetMiner.mineOntoTip(payingTo: vaultScript)
+        for _ in 0 ..< 99 { _ = try await SignetMiner.mineOntoTip(payingTo: burnScript) }
+        let fundingBlock = try BitcoinCLI.runObject(["getblock", fundingHash, "2"])
+        let fundingHeight = try UInt32(BitcoinCLI.int(fundingBlock, "height"))
+        let coinbase = try #require(
+            (try BitcoinCLI.array(fundingBlock, "tx")).first as? [String: Any])
+        let fundingTxid = try BitcoinCLI.string(coinbase, "txid")
+        let utxo = WalletUTXO(txid: Data(Data(hex: fundingTxid)!.reversed()), vout: 0,
+                              amount: 5_000_000_000, scriptPubKey: vaultScript,
+                              chain: .receive, index: 0, height: fundingHeight,
+                              isCoinbase: true)
+        trace("vault funded at height \(fundingHeight)")
+
+        // 5. We create the spend and sign nothing.
+        let payoutScript = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/6")))
+        let tip = try UInt32(BitcoinCLI.blockCount())
+        var psbt = try vault.createSpend(
+            utxos: [utxo], payments: [Payment(amount: 1_000_000, scriptPubKey: payoutScript)],
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: tip)
+        #expect(psbt.inputs[0].tapScriptSignatures.isEmpty, "creator must not have signed")
+
+        // 6. A signs our envelope; B signs A's output — a Core-to-Core leg
+        //    with no Winnow code in it. Both with finalize=false, for the
+        //    same load-bearing reason as the first test.
+        let toA = try v0Envelope(psbt)
+        let fromA = try BitcoinCLI.string(
+            BitcoinCLI.runObject(["walletprocesspsbt", toA, "true", "DEFAULT", "true", "false"],
+                                 wallet: walletA), "psbt")
+        let fromB = try BitcoinCLI.string(
+            BitcoinCLI.runObject(["walletprocesspsbt", fromA, "true", "DEFAULT", "true", "false"],
+                                 wallet: walletB), "psbt")
+        let coreMaps = try v0InputMaps(base64: fromB, inputCount: psbt.inputs.count)
+        for (index, map) in coreMaps.enumerated() {
+            for pair in map where pair.type == 0x14 {
+                guard !psbt.inputs[index].pairs.contains(where: { $0.key == pair.key }) else { continue }
+                psbt.inputs[index].pairs.append(pair)
+            }
+        }
+        let signatures = psbt.inputs[0].tapScriptSignatures
+        #expect(signatures.count == 2, "expected both Core signatures, got \(signatures.count)")
+        let ourLeafKey = try BIP86.xonlyPublicKey(
+            of: silentAccount.derived(path: "0/0"))
+        #expect(!signatures.keys.contains { $0.publicKey == Data(ourLeafKey) },
+                "our silent key must not appear among the signatures")
+        trace("both signatures are Core's; ours is absent")
+
+        // 7. Our finalizer assembles a transaction the network accepts.
+        var finalPSBT = psbt
+        let transaction = try vault.finalizeSpend(
+            &finalPSBT, knownUTXOs: [utxo],
+            ownedOutputCoordinates: [.init(choice: 1, index: 0)], chainTip: tip)
+        let raw = transaction.serialized(includeWitness: true).hex
+        let accept = try BitcoinCLI.runJSON(["testmempoolaccept", "[\"\(raw)\"]"])
+        let verdict = (accept as? [Any])?.first as? [String: Any]
+        #expect(verdict?["allowed"] as? Bool == true,
+                "network rejected the two-Core spend: \(verdict?["reject-reason"] ?? "unknown")")
+        let txid = try BitcoinCLI.run(["sendrawtransaction", raw])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try await SignetMiner.mineOntoTip(payingTo: burnScript)
+        let confirmed = try BitcoinCLI.runObject(["getrawtransaction", txid, "true"])
+        #expect(try BitcoinCLI.int(confirmed, "confirmations") >= 1)
+        trace("confirmed \(txid.prefix(16))… with zero Winnow signatures")
+    }
+
     /// Can Core co-sign a MuSig2 vault? (#58, S8)
     ///
     /// #58 is explicit that MuSig2 compatibility must never be inferred from
