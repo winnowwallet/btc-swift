@@ -98,6 +98,30 @@ extension MuSig {
     /// the signer's plain public key, the aggregate key, the message and
     /// arbitrary extra input (e.g. a session counter). The returned secret
     /// nonce is single-use: `partialSign` zeroes it.
+    /// BIP327's rand masking: with a secret key present, rand is XORed with
+    /// TaggedHash("MuSig/aux", rand) of it, so a broken RNG alone cannot
+    /// leak the nonce relationship.
+    private static func maskedRand(_ rand: Data, secretKey: Data?) -> Data {
+        guard let secretKey else { return rand }
+        let mask = TaggedHash.hash("MuSig/aux", rand)
+        return Data(zip(secretKey, mask).map { $0 ^ $1 })
+    }
+
+    /// The optional message, tagged and length-prefixed exactly as BIP327's
+    /// NonceGen hashes it: 0x00 for absent, 0x01 || len64be || message.
+    private static func lengthPrefixed(_ message: Data?) -> Data {
+        var prefixed = Data()
+        guard let message else {
+            prefixed.append(0x00)
+            return prefixed
+        }
+        prefixed.append(0x01)
+        var length = UInt64(message.count).bigEndian
+        withUnsafeBytes(of: &length) { prefixed.append(contentsOf: $0) }
+        prefixed.append(message)
+        return prefixed
+    }
+
     public static func nonceGenerate(secretKey: Data? = nil, publicKey: Data,
                                      aggregateKey: Data? = nil, message: Data? = nil,
                                      extraInput: Data? = nil, rand: Data? = nil) throws
@@ -107,20 +131,8 @@ extension MuSig {
         guard rand.count == 32, publicKey.count == 33 else { throw MuSig2Error.invalidNonce }
         if let secretKey { guard secretKey.count == 32 else { throw MuSig2Error.invalidSecretKey } }
         if let aggregateKey { guard aggregateKey.count == 32 else { throw MuSig2Error.invalidNonce } }
-        var randValue = rand
-        if let secretKey {
-            let mask = TaggedHash.hash("MuSig/aux", rand)
-            randValue = Data(zip(secretKey, mask).map { $0 ^ $1 })
-        }
-        var prefixed = Data()
-        if let message {
-            prefixed.append(0x01)
-            var length = UInt64(message.count).bigEndian
-            withUnsafeBytes(of: &length) { prefixed.append(contentsOf: $0) }
-            prefixed.append(message)
-        } else {
-            prefixed.append(0x00)
-        }
+        let randValue = maskedRand(rand, secretKey: secretKey)
+        let prefixed = lengthPrefixed(message)
         func nonceHash(_ index: UInt8) throws -> Data {
             var buffer = Data()
             buffer.append(randValue)

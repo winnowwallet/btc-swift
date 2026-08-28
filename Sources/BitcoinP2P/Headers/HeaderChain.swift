@@ -254,42 +254,51 @@ public actor HeaderChain {
         guard let forkHeight = heightByHash[newHeaders[0].previousHash] else {
             throw HeaderChainError.doesNotConnect
         }
-
         // Fast path: extending the tip, which is every batch of an ordinary
-        // sync. The staged path below copies both arrays and rebuilds the
-        // whole hash index, so its cost grows with the chain — 460 batches
-        // against mainnet meant hundreds of millions of redundant operations
-        // (#86). An append touches only the new headers.
+        // sync. The staged path copies both arrays and rebuilds the whole
+        // hash index, so its cost grows with the chain — 460 batches against
+        // mainnet meant hundreds of millions of redundant operations (#86).
+        // An append touches only the new headers.
         if forkHeight == height {
-            var previousHash = headers[headers.count - 1].hash
-            var work = chainwork[chainwork.count - 1]
-            var appended: [BlockHeader] = []
-            var appendedWork: [UInt256] = []
-            appended.reserveCapacity(newHeaders.count)
-            appendedWork.reserveCapacity(newHeaders.count)
-            for header in newHeaders {
-                let height = baseHeight + UInt32(headers.count + appended.count)
-                guard header.previousHash == previousHash else {
-                    throw HeaderChainError.doesNotConnect
-                }
-                work = work + (try Self.checkedWork(for: header, params: params, height: height))
-                appended.append(header)
-                appendedWork.append(work)
-                previousHash = header.hash
-            }
-            let firstNewHeight = baseHeight + UInt32(headers.count)
-            headers.append(contentsOf: appended)
-            chainwork.append(contentsOf: appendedWork)
-            for (offset, header) in appended.enumerated() {
-                heightByHash[header.hash] = firstNewHeight + UInt32(offset)
-            }
-            // Appending is the whole point of the fast path, so the write is
-            // incremental too. A reorg cannot reach here.
-            try persistAppended(from: headers.count - appended.count)
-            // The fast path is by definition an extension, so no fork height.
-            return ConnectOutcome(appended: newHeaders.count)
+            return try appendToTip(newHeaders)
         }
+        return try replaceBranch(with: newHeaders, forkHeight: forkHeight)
+    }
 
+    /// The ordinary-sync path: proof-of-work-check and append, with the
+    /// persistence write incremental too. A reorg cannot reach here, so the
+    /// outcome carries no fork height by definition.
+    private func appendToTip(_ newHeaders: [BlockHeader]) throws -> ConnectOutcome {
+        var previousHash = headers[headers.count - 1].hash
+        var work = chainwork[chainwork.count - 1]
+        var appended: [BlockHeader] = []
+        var appendedWork: [UInt256] = []
+        appended.reserveCapacity(newHeaders.count)
+        appendedWork.reserveCapacity(newHeaders.count)
+        for header in newHeaders {
+            let height = baseHeight + UInt32(headers.count + appended.count)
+            guard header.previousHash == previousHash else {
+                throw HeaderChainError.doesNotConnect
+            }
+            work = work + (try Self.checkedWork(for: header, params: params, height: height))
+            appended.append(header)
+            appendedWork.append(work)
+            previousHash = header.hash
+        }
+        let firstNewHeight = baseHeight + UInt32(headers.count)
+        headers.append(contentsOf: appended)
+        chainwork.append(contentsOf: appendedWork)
+        for (offset, header) in appended.enumerated() {
+            heightByHash[header.hash] = firstNewHeight + UInt32(offset)
+        }
+        try persistAppended(from: headers.count - appended.count)
+        return ConnectOutcome(appended: newHeaders.count)
+    }
+
+    /// The reorg path: stage the replacement branch from the fork, admit it
+    /// only with strictly more work, then swap and rebuild the index.
+    private func replaceBranch(with newHeaders: [BlockHeader],
+                               forkHeight: UInt32) throws -> ConnectOutcome {
         let forkIndex = Int(forkHeight - baseHeight)
         var stagedHeaders = Array(headers[...forkIndex])
         var stagedWork = Array(chainwork[...forkIndex])
@@ -553,18 +562,27 @@ public actor HeaderChain {
             } else {
                 work = work + parameters.work
             }
-            if baseHeight == 0, index == 0, header != genesis {
-                throw HeaderChainError.storageCorrupt("genesis mismatch")
-            }
-            if index > 0, header.previousHash != loadedHeaders[loadedHeaders.count - 1].hash {
-                throw HeaderChainError.storageCorrupt("broken linkage at \(baseHeight + index)")
-            }
+            try checkLineage(of: header, at: index, baseHeight: baseHeight,
+                             genesis: genesis, loaded: loadedHeaders)
             loadedHeaders.append(header)
             loadedWork.append(work)
         }
         let index = Dictionary(uniqueKeysWithValues:
             loadedHeaders.enumerated().map { ($1.hash, baseHeight + UInt32($0)) })
         return (loadedHeaders, loadedWork, index, baseHeight)
+    }
+
+    /// A loaded header must be the genesis where the file starts at genesis,
+    /// and must link to its predecessor everywhere else.
+    private static func checkLineage(of header: BlockHeader, at index: UInt32,
+                                     baseHeight: UInt32, genesis: BlockHeader,
+                                     loaded: [BlockHeader]) throws {
+        if baseHeight == 0, index == 0, header != genesis {
+            throw HeaderChainError.storageCorrupt("genesis mismatch")
+        }
+        if index > 0, header.previousHash != loaded[loaded.count - 1].hash {
+            throw HeaderChainError.storageCorrupt("broken linkage at \(baseHeight + index)")
+        }
     }
 
     /// The header file, read under the byte cap — checked against the

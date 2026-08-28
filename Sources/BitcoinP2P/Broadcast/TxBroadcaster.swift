@@ -575,29 +575,43 @@ public actor TxBroadcaster {
         let announcement = PeerMessage.inv(InventoryPayload([InventoryVector(type: .witnessTx, hash: txid)]))
         var announced = 0
         for peer in peers {
-            let key = peer.endpoint.description
-            if let relay = pending[txid]?.peers[key] {
-                if relay.state == .deprioritized { continue }
-                if relay.state != .requested, relay.state != .served,
-                   relay.announcements >= maxAnnouncementsPerPeer {
-                    pending[txid]?.peers[key]?.state = .deprioritized
-                    emit(.deprioritized(txid: txid, peer: peer.endpoint))
-                    continue
-                }
-            }
+            guard admitsAnnouncement(txid: txid, to: peer) else { continue }
             guard (try? await peer.send(announcement)) != nil else { continue }
             announced += 1
-            if var relay = pending[txid]?.peers[key] {
-                relay.announcements += 1
-                relay.lastAnnouncedAt = now()
-                if relay.state == .failed { relay.state = .announced } // retry after timeout/disconnect
-                pending[txid]?.peers[key] = relay
-            } else {
-                pending[txid]?.peers[key] = PeerRelay(state: .announced, announcements: 1,
-                                                      lastAnnouncedAt: now())
-            }
+            recordAnnouncement(txid: txid, key: peer.endpoint.description)
         }
         emit(.announced(txid: txid, peerCount: announced))
+    }
+
+    /// Whether this peer should hear about the tx again — and the
+    /// deprioritization write when the answer is "never again": a peer that
+    /// was announced to `maxAnnouncementsPerPeer` times without ever
+    /// requesting or serving it stops costing bandwidth.
+    private func admitsAnnouncement(txid: Data, to peer: PeerConnection) -> Bool {
+        let key = peer.endpoint.description
+        guard let relay = pending[txid]?.peers[key] else { return true }
+        if relay.state == .deprioritized { return false }
+        if relay.state != .requested, relay.state != .served,
+           relay.announcements >= maxAnnouncementsPerPeer {
+            pending[txid]?.peers[key]?.state = .deprioritized
+            emit(.deprioritized(txid: txid, peer: peer.endpoint))
+            return false
+        }
+        return true
+    }
+
+    /// One successful announcement's bookkeeping; a failed relay returns to
+    /// announced so a timeout or disconnect gets retried.
+    private func recordAnnouncement(txid: Data, key: String) {
+        if var relay = pending[txid]?.peers[key] {
+            relay.announcements += 1
+            relay.lastAnnouncedAt = now()
+            if relay.state == .failed { relay.state = .announced }
+            pending[txid]?.peers[key] = relay
+        } else {
+            pending[txid]?.peers[key] = PeerRelay(state: .announced, announcements: 1,
+                                                  lastAnnouncedAt: now())
+        }
     }
 
     /// Marks `announced` entries whose getdata never came within

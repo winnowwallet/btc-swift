@@ -288,29 +288,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
 
     /// The bundle's claimed UTXOs in wallet form.
     public func claimedUTXOs() throws -> [WalletUTXO] {
-        let claimed = try utxos.map { utxo in
-            guard let txid = Data(hex: utxo.txid), txid.count == 32 else {
-                throw WalletError.invalidBundle("bad txid \(utxo.txid)")
-            }
-            guard let scriptPubKey = Data(hex: utxo.scriptPubKey) else {
-                throw WalletError.invalidBundle("bad scriptPubKey \(utxo.scriptPubKey)")
-            }
-            guard let chain = AddressChain(rawValue: utxo.chain) else {
-                throw WalletError.invalidBundle("bad chain \(utxo.chain)")
-            }
-            // Refused rather than ignored, for the same reason the wallet
-            // state decoder refuses one: the tweak is required to sign for
-            // that coin, and this build has no BIP352 code. Importing it
-            // without the tweak would restore a coin that cannot be spent
-            // and does not say so.
-            if utxo.silentPaymentTweak != nil {
-                throw WalletError.silentPaymentWalletNeedsAlphaBuild
-            }
-            return WalletUTXO(txid: Data(txid.reversed()), vout: utxo.vout, amount: utxo.amount,
-                              scriptPubKey: scriptPubKey, chain: chain, index: utxo.index,
-                              height: utxo.height,
-                              isCoinbase: utxo.isCoinbase ?? false)
-        }
+        let claimed = try utxos.map(Self.parsedClaimedUTXO)
         var seen = Set<Transaction.Outpoint>()
         var total: Int64 = 0
         for coin in claimed {
@@ -330,6 +308,30 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             total = next
         }
         return claimed
+    }
+
+    /// One claimed coin, parsed and shape-checked. A silent-payment tweak is
+    /// refused rather than ignored, for the same reason the wallet state
+    /// decoder refuses one: the tweak is required to sign for that coin, and
+    /// this build has no BIP352 code — importing it without the tweak would
+    /// restore a coin that cannot be spent and does not say so.
+    private static func parsedClaimedUTXO(_ utxo: UTXO) throws -> WalletUTXO {
+        guard let txid = Data(hex: utxo.txid), txid.count == 32 else {
+            throw WalletError.invalidBundle("bad txid \(utxo.txid)")
+        }
+        guard let scriptPubKey = Data(hex: utxo.scriptPubKey) else {
+            throw WalletError.invalidBundle("bad scriptPubKey \(utxo.scriptPubKey)")
+        }
+        guard let chain = AddressChain(rawValue: utxo.chain) else {
+            throw WalletError.invalidBundle("bad chain \(utxo.chain)")
+        }
+        if utxo.silentPaymentTweak != nil {
+            throw WalletError.silentPaymentWalletNeedsAlphaBuild
+        }
+        return WalletUTXO(txid: Data(txid.reversed()), vout: utxo.vout, amount: utxo.amount,
+                          scriptPubKey: scriptPubKey, chain: chain, index: utxo.index,
+                          height: utxo.height,
+                          isCoinbase: utxo.isCoinbase ?? false)
     }
 }
 

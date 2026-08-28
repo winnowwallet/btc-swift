@@ -271,23 +271,9 @@ public actor PeerPool {
 
         while attempts < maxAttempts, transportRetries < maxTransportRetries {
             guard let peer = peers.first else {
-                // An empty pool used to mean there were no candidates. Since
-                // transport failures cool endpoints off rather than banning
-                // them, it can now mean "everyone is briefly unavailable" —
-                // which is a normal transient state, not a peerless one.
-                //
-                // Reporting it as `noPeers` would tell the user no Bitcoin
-                // peers are available at all while a peer sits thirty seconds
-                // from eligibility. That is the same overreaction #82 exists
-                // to remove, moved up a layer and made less truthful than
-                // before the change.
-                if !coolingEndpoints.isEmpty || transportRetries > 0 {
-                    throw PeerPoolHeaderSyncError.allPeersCoolingDown(
-                        cooling: coolingEndpoints.count,
-                        lastError: lastError?.localizedDescription
-                            ?? "the connected peers stopped answering")
-                }
-                if attempts == 0 { throw PeerPoolHeaderSyncError.noPeers }
+                try throwIfPoolOnlyCooling(attempts: attempts,
+                                           transportRetries: transportRetries,
+                                           lastError: lastError)
                 break
             }
             // `maxAttempts` is a budget of peers *burned*, so a peer that was
@@ -333,21 +319,96 @@ public actor PeerPool {
             if burnedAPeer { attempts += 1 }
         }
 
-        // Two ways out of that loop: peers burned, or transport retries spent.
-        // Only the first is exhaustion. Reporting the second as "tried 0 peers"
-        // is both wrong and unhelpful — the peers exist and are resting.
+        throw loopExitError(attempts: attempts, transportRetries: transportRetries,
+                            lastError: lastError)
+    }
+
+    /// Two ways out of the sync loop: peers burned, or transport retries
+    /// spent. Only the first is exhaustion — reporting the second as "tried
+    /// 0 peers" is both wrong and unhelpful, because the peers exist and are
+    /// resting.
+    private func loopExitError(attempts: Int, transportRetries: Int,
+                               lastError: (any Error)?) -> PeerPoolHeaderSyncError {
         if attempts == 0, !coolingEndpoints.isEmpty || transportRetries > 0 {
-            throw PeerPoolHeaderSyncError.allPeersCoolingDown(
+            return .allPeersCoolingDown(
                 cooling: max(coolingEndpoints.count, 1),
                 lastError: lastError?.localizedDescription
                     ?? "the connected peers stopped answering")
         }
-        throw PeerPoolHeaderSyncError.exhausted(
+        return .exhausted(
             attempts: attempts,
             lastError: lastError?.localizedDescription ?? "no additional peers were available")
     }
 
+    /// The empty-pool verdict. An empty pool used to mean there were no
+    /// candidates; since transport failures cool endpoints off rather than
+    /// banning them, it can now mean "everyone is briefly unavailable" — a
+    /// normal transient state, not a peerless one. Reporting it as `noPeers`
+    /// would tell the user no Bitcoin peers exist while a peer sits thirty
+    /// seconds from eligibility — the same overreaction #82 exists to
+    /// remove. Throws the truthful error, or returns to let the caller
+    /// leave the loop with what it has.
+    private func throwIfPoolOnlyCooling(attempts: Int, transportRetries: Int,
+                                        lastError: (any Error)?) throws {
+        if !coolingEndpoints.isEmpty || transportRetries > 0 {
+            throw PeerPoolHeaderSyncError.allPeersCoolingDown(
+                cooling: coolingEndpoints.count,
+                lastError: lastError?.localizedDescription
+                    ?? "the connected peers stopped answering")
+        }
+        if attempts == 0 { throw PeerPoolHeaderSyncError.noPeers }
+    }
+
     // MARK: - Internals
+
+    /// Starts dials for the next eligible candidates, up to the parallel
+    /// and per-round caps. Candidates the diversity policy would refuse are
+    /// skipped before the dial, not after: they would cost a connection
+    /// attempt and a slot in the race for nothing.
+    private func launchEligibleDials(from queue: [PeerCandidate], next: inout Int,
+                                     running: inout Int,
+                                     into group: inout TaskGroup<(PeerEndpoint, PeerConnection?)>) {
+        while next < queue.count, running < maxParallelDials,
+              attemptsThisRound < maxDialAttempts {
+            let candidate = queue[next]
+            next += 1
+            guard policy.admits(candidate, given: seatedCandidates()) else { continue }
+            let endpoint = candidate.endpoint
+            running += 1
+            attemptsThisRound += 1
+            group.addTask { [params, relayPreference, dialTimeout] in
+                let peer = PeerConnection(endpoint: endpoint, params: params,
+                                          relayPreference: relayPreference)
+                do {
+                    try await peer.connect(timeout: dialTimeout)
+                    return (endpoint, peer)
+                } catch {
+                    return (endpoint, nil) // unreachable or bad handshake
+                }
+            }
+        }
+    }
+
+    /// Admits (or disconnects) a completed dial. Re-checked on arrival as
+    /// well as before the dial: dials race, so two candidates from one
+    /// netblock or one source class can be in flight together and the second
+    /// must still be refused. Returns whether a seat was filled.
+    private func seatArrival(_ peer: PeerConnection, endpoint: PeerEndpoint,
+                             source: PeerSource, stillNeeded: Bool) async -> Bool {
+        let candidate = PeerCandidate(endpoint: endpoint, source: source)
+        guard started, stillNeeded, !peers.contains(where: { $0.endpoint == endpoint }),
+              policy.admits(candidate, given: seatedCandidates()) else {
+            await peer.disconnect() // slot filled, or diversity refused it
+            return false
+        }
+        peers.append(peer)
+        seatedSources[endpoint] = source
+        if knownGood.insert(endpoint).inserted {
+            knownSource[endpoint] = source
+            persistKnownGood()
+        }
+        return true
+    }
 
     private func pruneAndReplenish() async {
         var alive: [PeerConnection] = []
@@ -396,47 +457,15 @@ public actor PeerPool {
                     seen.formUnion(queue.map(\.endpoint))
                     queue.append(contentsOf: await seedCandidates(excluding: seen))
                 }
-                while next < queue.count, running < maxParallelDials,
-                      attemptsThisRound < maxDialAttempts {
-                    let candidate = queue[next]
-                    next += 1
-                    // Skipped before the dial, not after: a candidate the
-                    // policy would refuse costs a connection attempt and a
-                    // slot in the race for nothing.
-                    guard policy.admits(candidate, given: seatedCandidates()) else { continue }
-                    let endpoint = candidate.endpoint
-                    running += 1
-                    attemptsThisRound += 1
-                    group.addTask { [params, relayPreference, dialTimeout] in
-                        let peer = PeerConnection(endpoint: endpoint, params: params,
-                                                  relayPreference: relayPreference)
-                        do {
-                            try await peer.connect(timeout: dialTimeout)
-                            return (endpoint, peer)
-                        } catch {
-                            return (endpoint, nil) // unreachable or bad handshake
-                        }
-                    }
-                }
+                launchEligibleDials(from: queue, next: &next, running: &running,
+                                    into: &group)
                 guard running > 0, let (endpoint, dialed) = await group.next() else { break }
                 running -= 1
                 guard let peer = dialed else { continue }
                 let source = queue.first { $0.endpoint == endpoint }?.source ?? .persisted
-                let candidate = PeerCandidate(endpoint: endpoint, source: source)
-                // Re-checked on arrival as well as before the dial. Dials race,
-                // so two candidates from one block or one class can be in
-                // flight together and the second must still be refused.
-                if started, needed > 0, !peers.contains(where: { $0.endpoint == endpoint }),
-                   policy.admits(candidate, given: seatedCandidates()) {
-                    peers.append(peer)
-                    seatedSources[endpoint] = source
+                if await seatArrival(peer, endpoint: endpoint, source: source,
+                                     stillNeeded: needed > 0) {
                     needed -= 1
-                    if knownGood.insert(endpoint).inserted {
-                        knownSource[endpoint] = source
-                        persistKnownGood()
-                    }
-                } else {
-                    await peer.disconnect() // slot filled, or diversity refused it
                 }
             }
         }

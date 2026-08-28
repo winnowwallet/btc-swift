@@ -254,6 +254,28 @@ public actor MempoolWindow {
     /// the same tx, processed while the send is in flight, is deduped) and
     /// rolled back if the send fails.
     private func handleInv(_ payload: InventoryPayload, from peer: PeerConnection) async {
+        let request = admitAnnouncements(payload, from: peer)
+        guard !request.isEmpty else { return }
+        do {
+            try await peer.send(.getdata(InventoryPayload(request)))
+        } catch {
+            // Peer died mid-request; roll back so another peer's announcement
+            // re-requests the txs.
+            for vector in request {
+                seenTxids.remove(vector.hash)
+                if let index = seenOrder.firstIndex(of: vector.hash) { seenOrder.remove(at: index) }
+            }
+            return
+        }
+        let requestedAt = Date()
+        for vector in request { inFlight[vector.hash] = requestedAt }
+    }
+
+    /// Filters an inv down to the tx announcements worth fetching — echo
+    /// tracking, dedup against the bounded seen set, and the in-flight cap —
+    /// and records them as seen before the request goes out.
+    private func admitAnnouncements(_ payload: InventoryPayload,
+                                    from peer: PeerConnection) -> [InventoryVector] {
         var request: [InventoryVector] = []
         for vector in payload.vectors where vector.type.baseType == .tx {
             let txid = vector.hash
@@ -272,20 +294,7 @@ public actor MempoolWindow {
             let evicted = seenOrder.removeFirst()
             seenTxids.remove(evicted)
         }
-        guard !request.isEmpty else { return }
-        do {
-            try await peer.send(.getdata(InventoryPayload(request)))
-        } catch {
-            // Peer died mid-request; roll back so another peer's announcement
-            // re-requests the txs.
-            for vector in request {
-                seenTxids.remove(vector.hash)
-                if let index = seenOrder.firstIndex(of: vector.hash) { seenOrder.remove(at: index) }
-            }
-            return
-        }
-        let requestedAt = Date()
-        for vector in request { inFlight[vector.hash] = requestedAt }
+        return request
     }
 
     /// Matches a fetched transaction against the watch set (once — the

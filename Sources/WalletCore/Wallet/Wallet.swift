@@ -1327,11 +1327,13 @@ public actor Wallet {
         state = updated
     }
 
-    private func feeBumpCandidate(txid: Data, feeRateSatPerVByte: Double) throws -> FeeBumpCandidate {
-        guard feeRateSatPerVByte.isFinite, feeRateSatPerVByte > 0,
-              feeRateSatPerVByte <= 10_000 else {
-            throw FeeBumpError.invalidFeeRate(feeRateSatPerVByte)
-        }
+    /// Resolves a txid to a pending send a fee bump can act on: it must
+    /// still be pending, carry its original transaction and a change output,
+    /// that change must still be ours to respend, and the requested rate
+    /// must actually be a raise.
+    private func bumpablePendingSend(txid: Data, feeRateSatPerVByte: Double) throws
+        -> (pending: PendingSend, original: Transaction,
+            changeIndex: UInt32, changeOutputIndex: UInt32) {
         guard let pending = state.pendingSends.first(where: { $0.txid == txid }),
               let original = pending.transaction,
               let changeIndex = pending.changeIndex,
@@ -1352,6 +1354,17 @@ public actor Wallet {
         guard feeRateSatPerVByte > currentRate else {
             throw FeeBumpError.feeRateNotHigher(current: currentRate, requested: feeRateSatPerVByte)
         }
+        return (pending, original, changeIndex, originalChangeOutputIndex)
+    }
+
+    private func feeBumpCandidate(txid: Data, feeRateSatPerVByte: Double) throws -> FeeBumpCandidate {
+        guard feeRateSatPerVByte.isFinite, feeRateSatPerVByte > 0,
+              feeRateSatPerVByte <= 10_000 else {
+            throw FeeBumpError.invalidFeeRate(feeRateSatPerVByte)
+        }
+        let (pending, original, changeIndex, originalChangeOutputIndex) =
+            try bumpablePendingSend(txid: txid, feeRateSatPerVByte: feeRateSatPerVByte)
+        let currentRate = Double(pending.fee) / Double(TransactionBuilder.vsize(of: original))
 
         let changeOutput = original.outputs[Int(originalChangeOutputIndex)]
         let payments = original.outputs.enumerated().compactMap { index, output -> Payment? in

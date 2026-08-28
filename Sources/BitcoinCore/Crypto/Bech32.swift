@@ -75,12 +75,7 @@ public enum Bech32 {
         guard !hrp.isEmpty else { throw Bech32Error.emptyHRP }
         let dataPart = lowered.suffix(from: lowered.index(after: separator))
         guard dataPart.count >= 6 else { throw Bech32Error.invalidChecksum }
-        var values: [UInt8] = []
-        values.reserveCapacity(dataPart.count)
-        for char in dataPart.utf8 {
-            guard let value = charset.firstIndex(of: char) else { throw Bech32Error.invalidCharacter }
-            values.append(UInt8(value))
-        }
+        let values = try dataValues(dataPart)
         let constant = polymod(hrpExpand(Array(hrp.utf8)) + values)
         let encoding: Encoding = switch constant {
         case Encoding.bech32.checksumConstant: .bech32
@@ -88,6 +83,18 @@ public enum Bech32 {
         default: throw Bech32Error.invalidChecksum
         }
         return (hrp, Array(values.dropLast(6)), encoding)
+    }
+
+    /// The data part mapped through the bech32 charset, refusing any byte
+    /// outside it.
+    private static func dataValues(_ dataPart: Substring) throws -> [UInt8] {
+        var values: [UInt8] = []
+        values.reserveCapacity(dataPart.count)
+        for char in dataPart.utf8 {
+            guard let value = charset.firstIndex(of: char) else { throw Bech32Error.invalidCharacter }
+            values.append(UInt8(value))
+        }
+        return values
     }
 }
 

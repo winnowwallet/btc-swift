@@ -147,14 +147,8 @@ public enum SighashBIP341 {
     public static func signatureMessage(tx: Transaction, inputIndex: Int,
                                         spentOutputs: [SpentOutput], hashType: HashType,
                                         scriptPath: ScriptPath? = nil, annex: Data? = nil) throws -> Data {
-        guard hashType.isValid else { throw SighashError.invalidHashType(hashType.rawValue) }
-        guard inputIndex >= 0, inputIndex < tx.inputs.count else {
-            throw SighashError.inputIndexOutOfRange(index: inputIndex, count: tx.inputs.count)
-        }
-        guard tx.inputs.count == spentOutputs.count else {
-            throw SighashError.spentOutputCountMismatch(inputs: tx.inputs.count, spentOutputs: spentOutputs.count)
-        }
-
+        try checkArguments(tx: tx, inputIndex: inputIndex,
+                           spentOutputs: spentOutputs, hashType: hashType)
         let common = try commonHashes(tx: tx, spentOutputs: spentOutputs)
         var message = Data([0x00]) // epoch 0
         message.appendUInt8(hashType.rawValue)
@@ -171,6 +165,43 @@ public enum SighashBIP341 {
         }
         // spend_type = ext_flag * 2 + annex_present (BIP341).
         message.appendUInt8((scriptPath != nil ? 2 : 0) | (annex != nil ? 1 : 0))
+        appendInputSegment(&message, tx: tx, inputIndex: inputIndex,
+                           spentOutputs: spentOutputs, hashType: hashType, annex: annex)
+        if hashType.baseType == HashType.single.baseType {
+            guard inputIndex < tx.outputs.count else {
+                throw SighashError.singleWithoutCorrespondingOutput(index: inputIndex)
+            }
+            var serialized = Data()
+            serialized.appendInt64(tx.outputs[inputIndex].value)
+            serialized.appendVarData(tx.outputs[inputIndex].scriptPubKey)
+            message.append(sha256(serialized))
+        }
+        if let scriptPath { // BIP342 extension, appended last
+            message.append(scriptPath.tapleafHash)
+            message.appendUInt8(scriptPath.keyVersion)
+            message.appendUInt32(scriptPath.codeseparatorPosition)
+        }
+        return message
+    }
+
+    /// The argument contract, checked before a single byte is assembled.
+    private static func checkArguments(tx: Transaction, inputIndex: Int,
+                                       spentOutputs: [SpentOutput],
+                                       hashType: HashType) throws {
+        guard hashType.isValid else { throw SighashError.invalidHashType(hashType.rawValue) }
+        guard inputIndex >= 0, inputIndex < tx.inputs.count else {
+            throw SighashError.inputIndexOutOfRange(index: inputIndex, count: tx.inputs.count)
+        }
+        guard tx.inputs.count == spentOutputs.count else {
+            throw SighashError.spentOutputCountMismatch(inputs: tx.inputs.count, spentOutputs: spentOutputs.count)
+        }
+    }
+
+    /// BIP341's per-input data, in spec order: the ANYONECANPAY outpoint
+    /// fields or the input index, then the hashed annex when present.
+    private static func appendInputSegment(_ message: inout Data, tx: Transaction,
+                                           inputIndex: Int, spentOutputs: [SpentOutput],
+                                           hashType: HashType, annex: Data?) {
         if hashType.isAnyoneCanPay {
             let input = tx.inputs[inputIndex]
             let spent = spentOutputs[inputIndex]
@@ -187,21 +218,6 @@ public enum SighashBIP341 {
             prefixed.appendVarData(annex)
             message.append(sha256(prefixed))
         }
-        if hashType.baseType == HashType.single.baseType {
-            guard inputIndex < tx.outputs.count else {
-                throw SighashError.singleWithoutCorrespondingOutput(index: inputIndex)
-            }
-            var serialized = Data()
-            serialized.appendInt64(tx.outputs[inputIndex].value)
-            serialized.appendVarData(tx.outputs[inputIndex].scriptPubKey)
-            message.append(sha256(serialized))
-        }
-        if let scriptPath { // BIP342 extension, appended last
-            message.append(scriptPath.tapleafHash)
-            message.appendUInt8(scriptPath.keyVersion)
-            message.appendUInt32(scriptPath.codeseparatorPosition)
-        }
-        return message
     }
 
     /// The 32-byte sighash: TaggedHash("TapSighash", 0x00 || SigMsg) (BIP341).

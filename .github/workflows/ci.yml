@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   # The complexity budget from .swiftlint.yml, enforced: SwiftLint exits
-  # nonzero on error-level violations (over 12 decision paths) and green on
+  # nonzero on error-level violations (over 8 decision paths) and green on
   # warnings. Every function in Sources/ is at 10 or under.
   complexity:
     runs-on: macos-latest

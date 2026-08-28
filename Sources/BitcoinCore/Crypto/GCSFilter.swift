@@ -106,8 +106,12 @@ public struct GCSFilter: Sendable, Equatable {
             value = next
         }
 
-        // The writer pads the final byte with at most seven zero bits. Extra
-        // bytes or nonzero padding would be a second spelling of the filter.
+        try checkCanonicalPadding(&reader)
+    }
+
+    /// The writer pads the final byte with at most seven zero bits. Extra
+    /// bytes or nonzero padding would be a second spelling of the filter.
+    private static func checkCanonicalPadding(_ reader: inout BitReader) throws {
         guard reader.remainingBits < 8 else { throw GCSError.nonCanonicalEncoding }
         while let bit = reader.readOptional() {
             guard !bit else { throw GCSError.nonCanonicalEncoding }
