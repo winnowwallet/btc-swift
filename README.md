@@ -3,7 +3,7 @@
 The Bitcoin implementation behind [Winnow](https://github.com/winnowwallet/winnow) —
 keys to broadcast in ~10,600 lines of Swift, one dependency
 ([swift-secp256k1](https://github.com/21-DOT-DEV/swift-secp256k1), Bitcoin
-Core's libsecp256k1), every function under ten decision paths, enforced in CI.
+Core's libsecp256k1), every function at seven decision paths or under, enforced in CI.
 
 - `BitcoinCore` — crypto, keys (BIP39/32/86), Taproot (BIP341), descriptors
   (BIP380/387/389/390), MuSig2 (BIP327)
