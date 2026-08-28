@@ -77,9 +77,6 @@ jobs:
           echo "RPC $WINNOW_NODE_HOST:$WINNOW_RPC_PORT"
           nc -z -G 5 "$WINNOW_NODE_HOST" "$WINNOW_RPC_PORT" && echo "RPC REACHABLE" || echo "RPC UNREACHABLE"
 
-      - name: Install pinned XcodeGen
-        run: scripts/install-xcodegen
-
       - name: Require pre-provisioned bitcoin-cli
         run: |
           which bitcoin-cli >/dev/null || {
