@@ -69,6 +69,9 @@ jobs:
       - name: Build and exercise the CLI
         run: |
           swift build --configuration release
+          .build/release/btc-swift musig-xpub \
+            0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798 \
+            02C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5
           .build/release/btc-swift derive \
             "tr([00000000/86'/1'/0']tpubD6NzVbkrYhZ4XgiXtGrdW5XDAPFCL9h7we1vwNCpn8tGbBcgfVYjXyhWo4E1xkh56hjod1RhGjxbaTLV3X4FyWuejifB9jusQ46QzG87VKp/0/*)" \
             --network signet --count 3
