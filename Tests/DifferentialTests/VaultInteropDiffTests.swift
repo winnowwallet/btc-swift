@@ -482,9 +482,10 @@ struct VaultInteropDiffTests {
             var secretNonce = nonces[index].secret
             let partial = try MuSig.partialSign(secretNonce: &secretNonce, secretKey: member,
                                                  session: session)
-            try MuSig.partialVerify(partialSignature: partial,
-                                     publicNonce: nonces[index].public_,
-                                     publicKey: memberKeys[index], session: session)
+            #expect(try MuSig.partialVerify(partialSignature: partial,
+                                            publicNonce: nonces[index].public_,
+                                            publicKey: memberKeys[index], session: session),
+                    "member \(index)'s partial signature failed verification")
             partials.append(partial)
         }
         let groupSignature = try MuSig.partialSigAggregate(partialSignatures: partials,

@@ -242,8 +242,10 @@ do {
             var secretNonce = nonces[index].secret
             let partial = try MuSig.partialSign(secretNonce: &secretNonce, secretKey: secret,
                                                 session: session)
-            try MuSig.partialVerify(partialSignature: partial, publicNonce: nonces[index].public_,
-                                    publicKey: memberKeys[index], session: session)
+            guard try MuSig.partialVerify(partialSignature: partial, publicNonce: nonces[index].public_,
+                                          publicKey: memberKeys[index], session: session) else {
+                fail("member \(index + 1)'s partial signature failed verification")
+            }
             partials.append(partial)
         }
         let signature = try MuSig.partialSigAggregate(partialSignatures: partials, session: session)
