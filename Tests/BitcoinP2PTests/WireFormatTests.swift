@@ -25,6 +25,35 @@ struct WireFormatTests {
         try reader.requireEnd()
     }
 
+    /// Found by the fuzzer's canonical-round-trip invariant: a wider prefix
+    /// than the value needs used to be accepted, so `fd 00 00` parsed as zero
+    /// and re-serialized as the one-byte `00` it should have been. Core's
+    /// ReadCompactSize refuses all four of these.
+    @Test("compactSize refuses a wider prefix than the value needs", arguments: [
+        Data([0xFD, 0x00, 0x00]),                                     // 0 in two bytes
+        Data([0xFD, 0xFC, 0x00]),                                     // 0xFC in two bytes
+        Data([0xFE, 0x00, 0x00, 0x00, 0x00]),                         // 0 in four
+        Data([0xFE, 0xFF, 0xFF, 0x00, 0x00]),                         // 0xFFFF in four
+        Data([0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // 0 in eight
+        Data([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]), // 0xFFFFFFFF in eight
+    ])
+    func varIntRefusesNonMinimal(encoded: Data) throws {
+        var reader = ByteReader(encoded)
+        #expect(throws: WireError.invalidVarInt) { try reader.readVarInt() }
+    }
+
+    /// The smallest value each prefix is allowed to carry still parses.
+    @Test("compactSize accepts each width's first legal value", arguments: [
+        (Data([0xFD, 0xFD, 0x00]), UInt64(0xFD)),
+        (Data([0xFE, 0x00, 0x00, 0x01, 0x00]), UInt64(0x1_0000)),
+        (Data([0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]), UInt64(0x1_0000_0000)),
+    ])
+    func varIntAcceptsWidthMinimums(encoded: Data, value: UInt64) throws {
+        var reader = ByteReader(encoded)
+        #expect(try reader.readVarInt() == value)
+        try reader.requireEnd()
+    }
+
     @Test("varstring round-trips")
     func varString() throws {
         var data = Data()

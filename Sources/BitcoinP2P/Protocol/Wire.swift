@@ -66,18 +66,29 @@ public struct ByteReader: Sendable {
     }
 
     /// Bitcoin compactSize ("varint"): 0xFD/0xFE/0xFF prefixes select 2/4/8-byte little-endian.
+    ///
+    /// A wider prefix than the value needs is refused, matching Core's
+    /// ReadCompactSize: without that check one number has four encodings, and
+    /// a peer picking the long one gets bytes past this reader that no longer
+    /// re-serialize to what it sent.
     public mutating func readVarInt() throws -> UInt64 {
         let first = try readUInt8()
         switch first {
         case ..<0xFD:
             return UInt64(first)
         case 0xFD:
-            return UInt64(try readUInt16())
+            return try minimallyEncoded(UInt64(try readUInt16()), atLeast: 0xFD)
         case 0xFE:
-            return UInt64(try readUInt32())
+            return try minimallyEncoded(UInt64(try readUInt32()), atLeast: 0x1_0000)
         default:
-            return try readUInt64()
+            return try minimallyEncoded(try readUInt64(), atLeast: 0x1_0000_0000)
         }
+    }
+
+    /// The smallest prefix that can carry `value` is the only one allowed to.
+    private func minimallyEncoded(_ value: UInt64, atLeast minimum: UInt64) throws -> UInt64 {
+        guard value >= minimum else { throw WireError.invalidVarInt }
+        return value
     }
 
     /// compactSize-prefixed byte string.
