@@ -46,6 +46,12 @@ jobs:
       WINNOW_P2P_PORT: ${{ vars.BTC_SWIFT_P2P_PORT || '38401' }}
       WINNOW_RPC_PORT: ${{ vars.BTC_SWIFT_RPC_PORT || '38400' }}
       WINNOW_FIXTURE_DATADIR: ${{ vars.BTC_SWIFT_DATADIR || '' }}
+      # The shell steps read WINNOW_FIXTURE_DATADIR; the suites' BitcoinCLI
+      # reads WINNOW_DATADIR. Both must name the same fixture or the tests
+      # authenticate with one datadir's cookie against another's port, which
+      # fails as "Incorrect rpcuser or rpcpassword" rather than as a missing
+      # node. Empty counts as unset on both sides, so the default still holds.
+      WINNOW_DATADIR: ${{ vars.BTC_SWIFT_DATADIR || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
