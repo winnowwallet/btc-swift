@@ -72,7 +72,14 @@ struct FullLoopDiffTests {
         try await wallet.scan(using: sync)
         trace("first scan done")
         let fundingUTXO = try await #require(wallet.utxos.first, "filter match found no funding UTXO")
-        #expect(fundingUTXO.amount == 5_000_000_000, "signet subsidy") // 50 BTC
+        // A coinbase pays the subsidy plus that block's fees, and this fixture
+        // is shared: whatever sat in the node's mempool when we mined rides
+        // along. Ask the node what the block was worth rather than assuming an
+        // empty mempool — the exact figure still pins the amount.
+        let fundingStats = try BitcoinCLI.runObject(["getblockstats", String(fundingHeight)])
+        let coinbaseValue = try BitcoinCLI.int(fundingStats, "subsidy")
+            + BitcoinCLI.int(fundingStats, "totalfee")
+        #expect(fundingUTXO.amount == UInt64(coinbaseValue), "subsidy plus the block's fees")
         #expect(fundingUTXO.height == fundingHeight, "funded in the block we mined")
         let fundingTx = try BitcoinCLI.runObject(["getrawtransaction",
                                                   fundingUTXO.txid.displayHex, "true"])
