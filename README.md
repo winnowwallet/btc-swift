@@ -102,9 +102,9 @@ Omit `--base-ref` for a standalone snapshot. Changes to counting rules bump
 
 ## Consumers
 
-[winnow](https://github.com/winnowwallet/winnow) (the iOS wallet) and
-[winnow-story](https://github.com/winnowwallet/winnow-story) consume the
-library products. The wallet pins an exact published library version;
+[winnow](https://github.com/winnowwallet/winnow), including its app-owned story
+acceptance tooling, consumes the library products. Both pin the same exact
+published library version;
 the library and wallet use independent release versions.
 
 ## Releases
