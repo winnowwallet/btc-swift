@@ -1,0 +1,67 @@
+name: Node differential tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_dedicated_fixture:
+        description: Run against the dedicated, disposable library fixture
+        required: true
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      confirm_dedicated_fixture:
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-tests
+  cancel-in-progress: false
+
+jobs:
+  node-tests:
+    # Only trusted manual/release callers may use the persistent fixture runner.
+    if: inputs.confirm_dedicated_fixture && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: [self-hosted, macOS, btc-swift, node-e2e]
+    timeout-minutes: 90
+    env:
+      WINNOW_NODE_HOST: '127.0.0.1'
+      WINNOW_P2P_PORT: ${{ vars.BTC_SWIFT_P2P_PORT || '38401' }}
+      WINNOW_RPC_PORT: ${{ vars.BTC_SWIFT_RPC_PORT || '38400' }}
+      WINNOW_DATADIR: ${{ vars.BTC_SWIFT_DATADIR || '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify the dedicated fixture
+        run: |
+          command -v bitcoin-cli
+          swift --version
+          nc -z -G 5 "$WINNOW_NODE_HOST" "$WINNOW_P2P_PORT"
+          bitcoin-cli -datadir="${WINNOW_DATADIR:-$HOME/.bitcoin-mysignet}" \
+            -rpcport="$WINNOW_RPC_PORT" getblockchaininfo \
+            | python3 -c 'import json,sys; info=json.load(sys.stdin); assert info["chain"] == "signet", "expected a dedicated signet fixture"; print("fixture height:", info["blocks"])'
+
+      - name: Run the differential suite
+        env:
+          WINNOW_DIFF: "1"
+        # Mining suites share a chain tip and must run serially. Unit and
+        # loopback tests have their own CI job; this lane runs the node battery.
+        run: |
+          set -o pipefail
+          swift test --scratch-path "$RUNNER_TEMP/library-node-build" \
+            --filter DifferentialTests --no-parallel \
+            2>&1 | tee "$RUNNER_TEMP/library-differential.log"
+
+      - name: Upload differential results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: library-differential-${{ github.run_id }}
+          path: ${{ runner.temp }}/library-differential.log
+          if-no-files-found: warn
+          retention-days: 14

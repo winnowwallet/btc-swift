@@ -1,0 +1,92 @@
+name: Library release
+
+# A manual run validates without publishing. A new version tag validates and
+# publishes this library; App Store signing and delivery belong to the app.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check version and fallback-peer freshness
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python3 - <<'PY'
+          import datetime, os, re, subprocess
+          tag = os.environ['RELEASE_TAG']
+          if tag and not re.fullmatch(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', tag):
+              raise SystemExit('expected a stable vMAJOR.MINOR.PATCH tag')
+          timestamp = subprocess.check_output([
+              'git', 'log', '-1', '--format=%ct', '--',
+              'Sources/BitcoinP2P/Protocol/FallbackPeersGenerated.swift'], text=True).strip()
+          last = datetime.datetime.fromtimestamp(int(timestamp), datetime.timezone.utc)
+          age = (datetime.datetime.now(datetime.timezone.utc) - last).days
+          print(f'fallback peer list age: {age} days')
+          if age > 30:
+              raise SystemExit('refresh fallback peers before publishing a library release')
+          PY
+
+  ci:
+    needs: release-policy
+    uses: ./.github/workflows/ci.yml
+
+  security:
+    needs: release-policy
+    uses: ./.github/workflows/security.yml
+    with:
+      release_validation: true
+
+  differential:
+    needs: release-policy
+    uses: ./.github/workflows/node-tests.yml
+    with:
+      confirm_dedicated_fixture: true
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [ci, security, differential]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: production-supply-chain-${{ github.run_id }}
+          path: metadata
+      - name: Publish the validated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; its metadata and assets remain fixed.'
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os, pathlib
+          tag, commit = os.environ['GITHUB_REF_NAME'], os.environ['GITHUB_SHA']
+          pathlib.Path('release-notes.md').write_text(
+              f'Standalone btc-swift release `{tag}` at `{commit}`.\n\n'
+              'Validated with package tests, iOS Keychain attribute tests, CLI smoke, '
+              'production warning checks, bounded fuzzing, and the dedicated signet differential suite.\n\n'
+              'The attached SPDX and build-provenance documents identify this library and its dependencies. '
+              'Consumers should pin this exact package version. Published tags remain fixed.\n')
+          PY
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "btc-swift ${GITHUB_REF_NAME#v}" --notes-file release-notes.md \
+            metadata/supply-chain/btc-swift.spdx.json \
+            metadata/supply-chain/btc-swift-build-provenance.json
