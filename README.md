@@ -40,6 +40,21 @@ node on a reproducible signet — `scripts/signet-fixture up` builds the node
 from a committed dev key. The deterministic fuzzer lives beside this repo in
 [winnow-fuzz](https://github.com/winnowwallet/winnow-fuzz).
 
+The three iOS Keychain attribute tests live in `PlatformTests` and run in a
+minimal library-owned simulator host. They exercise `KeychainStore` from this
+checkout, including the protection class, iCloud synchronization setting, and
+secret round trip. They do not require Winnow or its App Store credentials:
+
+```sh
+scripts/ci-ios-keychain /tmp/btc-swift-keychain-results
+```
+
+Use a fresh output directory. The script verifies XcodeGen 2.46.0, generates
+an ignored test project, and saves build artifacts, the log, and `.xcresult`
+under the supplied directory.
+Simulator tests verify recorded attributes; device-lock enforcement still
+requires real hardware.
+
 ## Lines of code
 
 The [LOC workflow](https://github.com/winnowwallet/btc-swift/actions/workflows/loc.yml)
@@ -106,5 +121,17 @@ Release tags name fixed commits. Further changes ship in a new version;
 published tags are never moved. During the 0.x series, API changes may
 require updates in consumers, which should bump their exact version
 deliberately after running their own checks.
+
+The library release workflow reuses the same CI and security jobs that validate
+PRs, plus the dedicated node differential workflow. A manual run validates
+without publishing; pushing a new stable `vMAJOR.MINOR.PATCH` tag publishes only
+after those gates and fallback-peer freshness pass. Publication attaches
+`btc-swift.spdx.json` and `btc-swift-build-provenance.json` from the validated
+production build. Existing releases and the `v0.1.0` tag remain fixed.
+
+The app owns its UI, state, and end-to-end tests, and App Store delivery. The
+library owns protocol/wallet suites, the iOS Keychain host, fuzzing, and library
+release validation. The app also checks fallback-peer age when it ships, since
+an otherwise valid pinned library release can age between app releases.
 
 MIT.

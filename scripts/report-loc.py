@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 SCHEMA_VERSION = 1
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 CLOC_VERSION = "2.10"
 CLOC_SHA256 = "bf59272455172108072a0a106379f7509fd4349bdcfd85203bac038ccd286d83"
 CATEGORIES = {
@@ -27,7 +27,7 @@ CATEGORIES = {
 METRICS = ("files", "code", "comment", "blank", "nonblank", "lines", "source_loc")
 GENERATED = {"Sources/BitcoinP2P/Protocol/FallbackPeersGenerated.swift"}
 EXCLUDED_DIRS = {".build", ".swiftpm", "node_modules", "vendor", "vendored", "third_party", "build", "dist"}
-TEST_DIRS = {"Tests", "AppTests", "UITests", "tests"}
+TEST_DIRS = {"Tests", "AppTests", "UITests", "PlatformTests", "tests"}
 DATA_DIRS = {"vectors", "fixtures", "testdata", "corpus"}
 SOURCE_EXTENSIONS = {".swift", ".c", ".h", ".m", ".mm", ".cc", ".cpp", ".rs", ".py", ".sh"}
 TEXT_EXTENSIONS = {".md", ".txt", ".mediawiki", ".rst"}

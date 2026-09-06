@@ -1,0 +1,36 @@
+#!/bin/bash
+# Run the platform-dependent Keychain suite against this library checkout.
+set -euo pipefail
+
+LIBRARY_ROOT=$(git rev-parse --show-toplevel)
+IOS_ARTIFACTS="${1:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/btc-swift-ios-keychain}"
+mkdir -p "$IOS_ARTIFACTS/tools"
+
+curl --fail --silent --show-error --location --retry 3 \
+  https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip \
+  --output "$IOS_ARTIFACTS/tools/xcodegen.zip"
+printf '%s  %s\n' \
+  4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806 \
+  "$IOS_ARTIFACTS/tools/xcodegen.zip" | shasum -a 256 --check --strict
+unzip -q -o "$IOS_ARTIFACTS/tools/xcodegen.zip" -d "$IOS_ARTIFACTS/tools"
+LIBRARY_PACKAGE_PATH="$LIBRARY_ROOT" "$IOS_ARTIFACTS/tools/xcodegen/bin/xcodegen" generate \
+  --spec "$LIBRARY_ROOT/PlatformTests/project.yml" --project "$LIBRARY_ROOT/PlatformTests"
+
+SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c '
+import json, sys
+devices = json.load(sys.stdin)["devices"]
+matches = [device["udid"] for runtime in sorted(devices, reverse=True)
+           if ".iOS-" in runtime for device in devices[runtime]
+           if device["isAvailable"] and device["name"].startswith("iPhone")]
+if not matches:
+    sys.exit("no available iPhone simulator")
+print(matches[0])')
+
+xcodebuild test \
+  -project "$LIBRARY_ROOT/PlatformTests/LibraryPlatformTests.xcodeproj" \
+  -scheme LibraryKeychainTests \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+  -derivedDataPath "$IOS_ARTIFACTS/DerivedData" \
+  -resultBundlePath "$IOS_ARTIFACTS/KeychainTests.xcresult" \
+  -skipPackagePluginValidation -skipMacroValidation \
+  2>&1 | tee "$IOS_ARTIFACTS/keychain-tests.log"

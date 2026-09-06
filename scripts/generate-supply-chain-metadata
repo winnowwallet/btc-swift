@@ -67,10 +67,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=pathlib.Path)
     parser.add_argument("--subject", type=pathlib.Path)
-    parser.add_argument("--subject-name", default="winnow-source-tree")
+    parser.add_argument("--subject-name", default="btc-swift-source-tree")
     parser.add_argument(
         "--builder-id",
-        default="https://github.com/winnowwallet/winnow/.github/workflows/security.yml",
+        default="https://github.com/winnowwallet/btc-swift/.github/workflows/security.yml",
     )
     args = parser.parse_args()
 
@@ -79,17 +79,16 @@ def main() -> None:
     tree = git(root, "rev-parse", "HEAD^{tree}")
     resolved_path = root / "Package.resolved"
     package_path = root / "Package.swift"
-    project_path = root / "project.yml"
     resolved = json.loads(resolved_path.read_text())
     pins = sorted(resolved.get("pins", []), key=lambda pin: pin["identity"])
 
-    root_id = "SPDXRef-Package-winnow"
+    root_id = "SPDXRef-Package-btc-swift"
     packages: list[dict[str, Any]] = [
         {
             "SPDXID": root_id,
-            "name": "winnow",
+            "name": "btc-swift",
             "versionInfo": commit,
-            "downloadLocation": "https://github.com/winnowwallet/winnow",
+            "downloadLocation": "https://github.com/winnowwallet/btc-swift",
             "filesAnalyzed": False,
             "licenseConcluded": "NOASSERTION",
             "licenseDeclared": "NOASSERTION",
@@ -142,11 +141,11 @@ def main() -> None:
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": f"winnow-{commit[:12]}",
-        "documentNamespace": f"https://github.com/winnowwallet/winnow/sbom/{commit}",
+        "name": f"btc-swift-{commit[:12]}",
+        "documentNamespace": f"https://github.com/winnowwallet/btc-swift/sbom/{commit}",
         "creationInfo": {
             "created": commit_timestamp(root),
-            "creators": ["Tool: winnow-generate-supply-chain-metadata-1"],
+            "creators": ["Tool: btc-swift-generate-supply-chain-metadata-1"],
         },
         "packages": packages,
         "relationships": relationships,
@@ -163,11 +162,8 @@ def main() -> None:
 
     materials = [
         {"uri": "git+https://github.com/winnowwallet/btc-swift.git", "digest": {"sha1": commit}},
-        # Presence-driven: the library repo has no project.yml, and a repo
-        # without a committed Package.resolved simply has fewer materials —
-        # an honest SBOM either way, never a crash.
         *[{"uri": f"file:{path.name}", "digest": {"sha256": sha256_file(path)}}
-          for path in (package_path, resolved_path, project_path) if path.exists()],
+          for path in (package_path, resolved_path) if path.exists()],
         *dependencies,
     ]
     materials.sort(key=lambda material: material["uri"])
@@ -178,7 +174,7 @@ def main() -> None:
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://github.com/winnowwallet/winnow/build-types/swift-package-and-xcode/v1",
+                "buildType": "https://github.com/winnowwallet/btc-swift/build-types/swift-package/v1",
                 "externalParameters": {
                     "configuration": "release",
                     "packageLock": "Package.resolved",
@@ -194,8 +190,8 @@ def main() -> None:
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(args.output_dir / "winnow.spdx.json", spdx)
-    write_json(args.output_dir / "winnow-build-provenance.json", provenance)
+    write_json(args.output_dir / "btc-swift.spdx.json", spdx)
+    write_json(args.output_dir / "btc-swift-build-provenance.json", provenance)
 
 
 if __name__ == "__main__":

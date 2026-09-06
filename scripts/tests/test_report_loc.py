@@ -93,6 +93,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(files["docs/binary.png"]["reason"], "binary/non-UTF-8")
         self.assertEqual(result["exclusions"], {"LFS pointer": 1, "binary/non-UTF-8": 1, "dependency/build output": 2, "generated source": 1, "symlink": 1})
         self.assertEqual(result["source_loc"], sum(file["source_loc"] for file in files.values()))
+        self.assertEqual(LOC.category("PlatformTests/KeychainAttributeTests.swift"), "tests")
 
     def test_merge_base_additions_deletions_and_renames(self):
         self.put("Sources/remove.swift", "let removed = 1\n")

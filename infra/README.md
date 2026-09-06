@@ -1,21 +1,25 @@
 # CI infrastructure for the node-backed suite
 
-`node-tests.yml` needs two things no hosted runner provides: a macOS runner
-with Xcode and `bitcoin-cli`, and a Bitcoin Core node running the disposable
-custom signet the differential and UI suites mine on. Both live on one
-libvirt/docker host on the tailnet. This directory is what it takes to
-recreate either from scratch.
+`node-tests.yml` runs only the library differential suite on a dedicated macOS
+runner with Swift, `bitcoin-cli`, and its own disposable custom-signet node.
+It can be dispatched manually and is reused by the library release workflow.
+PRs use hosted runners for unit, loopback, and iOS Keychain tests; they never
+reach this persistent runner. App UI e2e runs in the app repository.
 
 | Piece | Where it runs | Recreated by |
 |---|---|---|
 | Signet fixture (Core 31.1, custom signet) | a docker container on the host, RPC and P2P on the host's Tailscale address | `infra/fixture/bootstrap.sh` |
 | macOS runner `macvm-N-btc` (labels `self-hosted, macOS, btc-swift, node-e2e`) | an OSX-KVM guest on the same host | `infra/runner/README.md` |
 
-The workflow finds the fixture through the repo variable `BTC_SWIFT_NODE_HOST`
-(the host's Tailscale IPv4) and authenticates RPC with the fixed `winnow-ci`
-credential in the secret `BTC_SWIFT_RPC_COOKIE`, whose `rpcauth` line the
-bootstrap writes into the node's config. Nothing on the fixture is secret:
-the chain holds no value and the block-signing key is a published constant.
+The current workflow uses localhost and cookie authentication. Repository
+variables `BTC_SWIFT_DATADIR`, `BTC_SWIFT_RPC_PORT`, and `BTC_SWIFT_P2P_PORT`
+select the dedicated runner's fixture. Provision it with
+`scripts/signet-fixture up` using corresponding `WINNOW_DATADIR`,
+`WINNOW_RPC_PORT`, and `WINNOW_P2P_PORT` values. The workflow verifies the node,
+then runs `WINNOW_DIFF=1 swift test --filter DifferentialTests --no-parallel`.
+
+The Docker bootstrap below is an alternative fixture layout for a separate
+host; it is not the localhost/cookie configuration used by the current workflow.
 
 ## The fixture
 
@@ -47,6 +51,6 @@ the host; registering it and provisioning what the workflow needs is scripted.
 
 ## Checking
 
-`node-tests.yml` probes both ports of the fixture before doing anything and
-refuses to run without `bitcoin-cli` and Xcode on the runner, so a broken
-piece fails in the first minute with a named step.
+`node-tests.yml` verifies the P2P port and authenticated RPC before testing,
+then uploads the differential log. Mining suites run serially so they cannot
+race each other for the same tip. Unit tests run in their own CI job.
