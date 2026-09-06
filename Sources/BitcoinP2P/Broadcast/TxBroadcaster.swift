@@ -575,12 +575,26 @@ public actor TxBroadcaster {
         let announcement = PeerMessage.inv(InventoryPayload([InventoryVector(type: .witnessTx, hash: txid)]))
         var announced = 0
         for peer in peers {
+            // BIP133: a peer whose fee filter is above this transaction's
+            // rate has said it will drop the bytes unread. Announcing anyway
+            // spends an attempt on a peer that cannot help, and the
+            // deprioritization it earns hides the real reason. Skipped, not
+            // marked, so a filter that later drops lets it back in.
+            if await feeFilterRefuses(txid: txid, at: peer) { continue }
             guard admitsAnnouncement(txid: txid, to: peer) else { continue }
             guard (try? await peer.send(announcement)) != nil else { continue }
             announced += 1
             recordAnnouncement(txid: txid, key: peer.endpoint.description)
         }
         emit(.announced(txid: txid, peerCount: announced))
+    }
+
+    /// BIP133: whether the peer's announced fee filter sits above this
+    /// transaction's rate. No filter, or no rate on record, refuses nothing.
+    private func feeFilterRefuses(txid: Data, at peer: PeerConnection) async -> Bool {
+        guard let rate = pending[txid]?.feeRateSatPerVByte,
+              let floor = await peer.feeFilter else { return false }
+        return Double(floor) > rate * 1_000
     }
 
     /// Whether this peer should hear about the tx again — and the

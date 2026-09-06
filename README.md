@@ -33,7 +33,7 @@ long-run evidence comes from.
 
 ## Tests
 
-489 tests in 84 suites: BIP vectors, unit, loopback protocol suites, and a
+517 tests in 90 suites: BIP vectors, unit, loopback protocol suites, and a
 differential battery (`WINNOW_DIFF=1 swift test --no-parallel`) that rebuilds
 filters, headers, sighashes, and PSBTs field-by-field against a Bitcoin Core
 node on a reproducible signet — `scripts/signet-fixture up` builds the node
@@ -45,6 +45,21 @@ from a committed dev key. The deterministic fuzzer lives beside this repo in
 [winnow](https://github.com/winnowwallet/winnow) (the iOS wallet),
 [winnow-story](https://github.com/winnowwallet/winnow-story), and
 [winnow-fuzz](https://github.com/winnowwallet/winnow-fuzz) consume the
-library products; the wallet pins an exact revision.
+library products. The wallet pins an exact published library version;
+the library and wallet use independent release versions.
+
+## Releases
+
+[0.1.0](https://github.com/winnowwallet/btc-swift/releases/tag/v0.1.0) is the
+first standalone library release. Swift package consumers can pin it with:
+
+```swift
+.package(url: "https://github.com/winnowwallet/btc-swift", exact: "0.1.0")
+```
+
+Release tags name fixed commits. Further changes ship in a new version;
+published tags are never moved. During the 0.x series, API changes may
+require updates in consumers, which should bump their exact version
+deliberately after running their own checks.
 
 MIT.
