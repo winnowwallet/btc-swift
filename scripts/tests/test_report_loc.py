@@ -94,6 +94,13 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result["exclusions"], {"LFS pointer": 1, "binary/non-UTF-8": 1, "dependency/build output": 2, "generated source": 1, "symlink": 1})
         self.assertEqual(result["source_loc"], sum(file["source_loc"] for file in files.values()))
         self.assertEqual(LOC.category("PlatformTests/KeychainAttributeTests.swift"), "tests")
+        self.assertEqual(LOC.category("PlatformTests/project.yml"), "tooling")
+        self.assertEqual(LOC.category("Fuzz/Sources/WinnowFuzz/main.swift"), "tests")
+        self.assertEqual(LOC.category("Fuzz/Package.swift"), "tooling")
+        self.assertEqual(LOC.category("Fuzz/Package.resolved"), "other")
+        self.assertEqual(LOC.category("Fuzz/README.md"), "other")
+        self.assertEqual(LOC.category("Fuzz/corpus/transaction.hex"), "other")
+        self.assertEqual(LOC.exclusion("Fuzz/.build/checkouts/dependency.swift", "100644"), "dependency/build output")
 
     def test_merge_base_additions_deletions_and_renames(self):
         self.put("Sources/remove.swift", "let removed = 1\n")

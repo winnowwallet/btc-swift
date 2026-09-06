@@ -37,8 +37,8 @@ long-run evidence comes from.
 differential battery (`WINNOW_DIFF=1 swift test --no-parallel`) that rebuilds
 filters, headers, sighashes, and PSBTs field-by-field against a Bitcoin Core
 node on a reproducible signet — `scripts/signet-fixture up` builds the node
-from a committed dev key. The deterministic fuzzer lives beside this repo in
-[winnow-fuzz](https://github.com/winnowwallet/winnow-fuzz).
+from a committed dev key. The deterministic [fuzz harness](Fuzz/README.md)
+lives in this repository and consumes this checkout's public library products.
 
 The three iOS Keychain attribute tests live in `PlatformTests` and run in a
 minimal library-owned simulator host. They exercise `KeychainStore` from this
@@ -102,9 +102,8 @@ Omit `--base-ref` for a standalone snapshot. Changes to counting rules bump
 
 ## Consumers
 
-[winnow](https://github.com/winnowwallet/winnow) (the iOS wallet),
-[winnow-story](https://github.com/winnowwallet/winnow-story), and
-[winnow-fuzz](https://github.com/winnowwallet/winnow-fuzz) consume the
+[winnow](https://github.com/winnowwallet/winnow) (the iOS wallet) and
+[winnow-story](https://github.com/winnowwallet/winnow-story) consume the
 library products. The wallet pins an exact published library version;
 the library and wallet use independent release versions.
 

@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 SCHEMA_VERSION = 1
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 CLOC_VERSION = "2.10"
 CLOC_SHA256 = "bf59272455172108072a0a106379f7509fd4349bdcfd85203bac038ccd286d83"
 CATEGORIES = {
@@ -27,7 +27,7 @@ CATEGORIES = {
 METRICS = ("files", "code", "comment", "blank", "nonblank", "lines", "source_loc")
 GENERATED = {"Sources/BitcoinP2P/Protocol/FallbackPeersGenerated.swift"}
 EXCLUDED_DIRS = {".build", ".swiftpm", "node_modules", "vendor", "vendored", "third_party", "build", "dist"}
-TEST_DIRS = {"Tests", "AppTests", "UITests", "PlatformTests", "tests"}
+TEST_DIRS = {"Tests", "AppTests", "UITests", "PlatformTests", "Fuzz", "tests"}
 DATA_DIRS = {"vectors", "fixtures", "testdata", "corpus"}
 SOURCE_EXTENSIONS = {".swift", ".c", ".h", ".m", ".mm", ".cc", ".cpp", ".rs", ".py", ".sh"}
 TEXT_EXTENSIONS = {".md", ".txt", ".mediawiki", ".rst"}
@@ -51,11 +51,11 @@ def category(path: str) -> str:
         return "other"
     if item.suffix.lower() in {".html", ".htm", ".css", ".js", ".mjs", ".jsx", ".tsx"}:
         return "webpages"
+    if item.name in {"Package.swift", "project.yml", "Makefile", "Dockerfile", ".swiftlint.yml"}:
+        return "tooling"
     if is_test:
         return "tests"
     if parts[0] in {"scripts", "infra", "libvirt"} or parts[:2] == (".github", "workflows"):
-        return "tooling"
-    if item.name in {"Package.swift", "project.yml", "Makefile", "Dockerfile", ".swiftlint.yml"}:
         return "tooling"
     if item.suffix.lower() in SOURCE_EXTENSIONS:
         return "source"
