@@ -2,6 +2,7 @@ name: CI
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -44,6 +45,26 @@ jobs:
         run: swift test
         # Env-gated suites (DifferentialTests, signet integration) skip
         # cleanly without WINNOW_DIFF/WINNOW_SIGNET and no local node.
+
+  ios-keychain:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test Keychain attributes in the library iOS host
+        run: scripts/ci-ios-keychain "$RUNNER_TEMP/ios-keychain"
+      - name: Upload platform test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: library-keychain-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ios-keychain/keychain-tests.log
+            ${{ runner.temp }}/ios-keychain/KeychainTests.xcresult
+          if-no-files-found: error
+          retention-days: 14
 
   # The self-hosted runners are x86_64 and macos-latest is arm64; this keeps
   # Intel coverage, on trusted events only — never pull_request, so fork code

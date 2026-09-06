@@ -1,6 +1,11 @@
 name: Security CI
 
 on:
+  workflow_call:
+    inputs:
+      release_validation:
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -65,7 +70,7 @@ jobs:
           retention-days: 14
 
   fuzz-smoke:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || inputs.release_validation
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -73,15 +78,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The harness lives in its own repository and consumes only winnow's
-      # public library products; WINNOW_PATH points it at this checkout so
-      # what gets fuzzed is the commit under test, not main.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: winnowwallet/winnow-fuzz
-          path: winnow-fuzz
-          persist-credentials: false
-
+      # The local harness package consumes this checkout's public products.
       # Deliberately a FIXED seed, unlike the sustained lane. This is the
       # regression evidence: every pull request fuzzes the identical 9,000
       # cases, so a newly-introduced parser bug shows up as this job turning
@@ -91,7 +88,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/winnow-fuzz-smoke"
           set -o pipefail
-          WINNOW_PATH="$GITHUB_WORKSPACE" swift run --package-path winnow-fuzz \
+          swift run --package-path Fuzz \
             --configuration release WinnowFuzz \
             --iterations 1000 \
             --seed 0x57494e4e4f575055 \
@@ -109,7 +106,7 @@ jobs:
           retention-days: 7
 
   sustained-fuzz:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.release_validation)
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
@@ -126,12 +123,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          persist-credentials: false
-
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: winnowwallet/winnow-fuzz
-          path: winnow-fuzz
           persist-credentials: false
 
       - name: Sustained deterministic fuzz under ${{ matrix.sanitizer }} sanitizer
@@ -155,7 +146,7 @@ jobs:
           printf '%s\n' "$RESOLVED_SEED" > "$FUZZ_DIR/seed.txt"
           echo "sustained fuzz: sanitizer=${{ matrix.sanitizer }} seed=$RESOLVED_SEED"
           set -o pipefail
-          WINNOW_PATH="$GITHUB_WORKSPACE" swift run --package-path winnow-fuzz \
+          swift run --package-path Fuzz \
             --configuration release --sanitize "${{ matrix.sanitizer }}" WinnowFuzz \
             --iterations 25000 \
             --seed "$RESOLVED_SEED" \

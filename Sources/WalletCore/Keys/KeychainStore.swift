@@ -6,7 +6,7 @@ import Security
 /// migrated via backup), `kSecAttrSynchronizable = false` (no iCloud sync).
 ///
 /// SPM test runners have no keychain entitlements, so the package suite cannot
-/// reach this. `AppTests/KeychainAttributeTests` can: it is hosted in the app,
+/// reach this. `PlatformTests/KeychainAttributeTests` uses a library-owned iOS host,
 /// stores a secret through this type and reads the attributes back out of the
 /// Keychain, so the protection class is observed rather than reviewed. What
 /// that still cannot show is that iOS *honours* it when the device locks —

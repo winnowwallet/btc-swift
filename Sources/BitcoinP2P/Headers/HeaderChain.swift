@@ -250,6 +250,23 @@ public actor HeaderChain {
     /// an existing branch -- the one fact a consumer needs in order to rewind.
     @discardableResult
     public func connect(_ newHeaders: [BlockHeader]) throws -> ConnectOutcome {
+        // Headers the chain already holds, at the height they claim, are not
+        // news and not a competing branch. A peer replays them legitimately:
+        // a `headers` announcement of a block we then also fetch, a reply to
+        // a getheaders whose locator sat below the tip, or a reply left
+        // waiting behind a request that was answered from the announcement.
+        // Read as a branch they carry no more work than the chain, and the
+        // pool then condemned an honest peer for "an older or weaker chain"
+        // — and with a single manual peer, that left the app peerless until
+        // relaunch. Skip them; judge only what is new.
+        var remaining = newHeaders[...]
+        while let first = remaining.first,
+              let known = heightByHash[first.hash],
+              let previous = heightByHash[first.previousHash],
+              known == previous + 1 {
+            remaining = remaining.dropFirst()
+        }
+        let newHeaders = Array(remaining)
         guard !newHeaders.isEmpty else { return ConnectOutcome(appended: 0) }
         guard let forkHeight = heightByHash[newHeaders[0].previousHash] else {
             throw HeaderChainError.doesNotConnect
@@ -336,6 +353,7 @@ public actor HeaderChain {
     public func sync(using peer: PeerConnection,
                      timeout: Duration = .seconds(30)) async throws -> SyncOutcome {
         var outcome = SyncOutcome()
+        var replays = 0
         while true {
             let request = GetHeadersMessage(version: PeerConnection.protocolVersion,
                                             locatorHashes: blockLocator())
@@ -346,10 +364,38 @@ public actor HeaderChain {
                 throw HeaderChainError.badPeerResponse("expected headers")
             }
             if batch.isEmpty { return outcome }
-            outcome.absorb(try connect(batch))
+            let answeredNothing: Bool
+            do {
+                let connected = try connect(batch)
+                outcome.absorb(connected)
+                // A batch made only of headers already held answers nothing:
+                // it was an announcement or a stale reply that the wait
+                // consumed in place of the real one.
+                answeredNothing = connected.appended == 0
+            } catch HeaderChainError.reorgWithoutMoreWork
+                where batch.count == 1 && heightByHash[batch[0].previousHash] == height - 1 {
+                // A sibling of our tip with no more work: the losing block
+                // of a race the peer saw first. Being on the losing side is
+                // a state, not a lie, so it counts as a batch that answered
+                // nothing. A lighter branch longer than one block is not
+                // what a race produces and stays a fault.
+                outcome.staleSiblings += 1
+                answeredNothing = true
+            }
+            // Ask again, a bounded number of times, so the sync ends on the
+            // peer's actual answer rather than on a batch it did not mean.
+            if answeredNothing {
+                replays += 1
+                if replays > Self.maxReplayedBatches { return outcome }
+                continue
+            }
             if batch.count < Self.maxHeadersPerRequest { return outcome }
         }
     }
+
+    /// How many already-known batches one sync call absorbs before it
+    /// returns without news rather than asking again.
+    static let maxReplayedBatches = 4
 
     // MARK: - Persistence
 
@@ -487,6 +533,10 @@ public actor HeaderChain {
         public var minForkHeight: UInt32?
         /// Headers disconnected across the whole sync.
         public var disconnectedHeaders: Int = 0
+
+        /// Batches that offered a sibling of the tip with no more work — the
+        /// peer is on the losing side of a race, not lying.
+        public var staleSiblings = 0
 
         mutating func absorb(_ batch: ConnectOutcome) {
             connected += batch.appended
