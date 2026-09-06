@@ -1,7 +1,7 @@
 # btc-swift
 
 The Bitcoin implementation behind [Winnow](https://github.com/winnowwallet/winnow) —
-keys to broadcast in ~10,600 lines of Swift, one dependency
+keys to broadcast with one dependency
 ([swift-secp256k1](https://github.com/21-DOT-DEV/swift-secp256k1), Bitcoin
 Core's libsecp256k1), every function at seven decision paths or under, enforced in CI.
 
@@ -39,6 +39,51 @@ filters, headers, sighashes, and PSBTs field-by-field against a Bitcoin Core
 node on a reproducible signet — `scripts/signet-fixture up` builds the node
 from a committed dev key. The deterministic fuzzer lives beside this repo in
 [winnow-fuzz](https://github.com/winnowwallet/winnow-fuzz).
+
+## Lines of code
+
+The [LOC workflow](https://github.com/winnowwallet/btc-swift/actions/workflows/loc.yml)
+reports every pull request, push to `main`, and manual run, including changes
+that only touch documentation or webpages. Open the run's summary for category
+totals and download its `loc-<commit>-<attempt>` artifact for `loc.json`,
+`loc.csv`, and `loc.md`. Artifacts expire after 90 days, or sooner if limited by
+organization policy; reports are not committed or attached to releases.
+
+**Total source** sums nonblank, noncomment lines in library/CLI source, tests,
+webpages, and tooling/infrastructure (including workflows and build manifests).
+Documentation, vectors, fixtures, lockfiles, and unknown text belong to **other
+text**, which has a separate nonblank-line total. Webpages remain visible with
+a zero count when absent. Fixtures take precedence over test and webpage rules;
+scripts take precedence over source-language rules.
+
+Counting uses committed Git blobs, once per tracked path, and excludes generated
+fallback peers, dependency/build directories, binaries/non-UTF-8 files, symlinks,
+submodules, and LFS pointers. Local edits, downloaded dependencies, and caches
+cannot change a commit's report. Every excluded path and reason is recorded.
+PR deltas compare the head against its merge base using the head's counting
+policy for both snapshots; a rename within a category has no LOC effect.
+
+JSON contains versioned metadata, head/base snapshots, per-file measurements,
+category/language aggregates, and deltas. CSV has one row per path per snapshot,
+including excluded paths. `code`, `comment`, and `blank` retain cloc's counters
+where it recognizes a file; `source_loc` excludes other text, and `nonblank`
+counts physical nonblank text lines. Unknown text retains its raw line counts.
+LOC growth is informational; failures to count or upload fail the reporting job.
+
+To reproduce a report locally, download the
+[official cloc 2.10 Perl asset](https://github.com/AlDanial/cloc/releases/download/v2.10/cloc-2.10.pl),
+then run (the reporter verifies its checksum):
+
+```sh
+python3 scripts/report-loc.py --cloc /path/to/cloc-2.10.pl \
+  --ref HEAD --base-ref origin/main --output-dir /tmp/btc-swift-loc
+CLOC=/path/to/cloc-2.10.pl PYTHONDONTWRITEBYTECODE=1 \
+  python3 -m unittest discover -s scripts/tests -p 'test_report_loc.py' -v
+```
+
+Omit `--base-ref` for a standalone snapshot. Changes to counting rules bump
+`POLICY_VERSION`; incompatible JSON/CSV changes bump `SCHEMA_VERSION` in
+`scripts/report-loc.py`. No Swift build or dependency resolution is needed.
 
 ## Consumers
 
